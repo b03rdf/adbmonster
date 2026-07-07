@@ -1,0 +1,1 @@
+Replace this directory with actual scrcpy-win64 files from https://github.com/Genymobile/scrcpy/releases

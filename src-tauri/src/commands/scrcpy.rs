@@ -1,0 +1,107 @@
+use std::sync::Mutex;
+use std::process::Stdio;
+use tokio::process::Command;
+use tokio::io::AsyncReadExt;
+use tauri::{AppHandle, Manager};
+
+pub struct ScrcpyState {
+    pub process: Mutex<Option<tokio::process::Child>>,
+}
+
+fn find_scrcpy(resource_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
+    if let Ok(path) = which::which("scrcpy") {
+        return Ok(path);
+    }
+
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut v = Vec::new();
+        if let Some(dir) = resource_dir {
+            v.push(dir.join("scrcpy").join("scrcpy.exe"));
+            v.push(dir.join("scrcpy.exe"));
+        }
+        v.push(std::path::PathBuf::from("src-tauri/scrcpy/scrcpy.exe"));
+        v.push(std::path::PathBuf::from("scrcpy/scrcpy.exe"));
+        v.push(std::path::PathBuf::from("scrcpy.exe"));
+        if let Ok(exe) = std::env::current_exe() {
+            let dir = exe.parent().unwrap_or(&exe);
+            v.push(dir.join("scrcpy").join("scrcpy.exe"));
+            v.push(dir.join("scrcpy.exe"));
+        }
+        v
+    };
+
+    for c in &candidates {
+        if c.exists() {
+            return Ok(c.to_path_buf());
+        }
+    }
+
+    Err("scrcpy not found. Please install scrcpy (https://github.com/Genymobile/scrcpy).\n  Options:\n    - winget install scrcpy\n    - Download zip and extract 'scrcpy/' folder next to this app".to_string())
+}
+
+#[tauri::command]
+pub async fn start_scrcpy(device_id: String, app: AppHandle) -> Result<String, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let scrcpy_path = find_scrcpy(resource_dir.as_deref())?;
+
+    let mut child = Command::new(&scrcpy_path)
+        .args(["-s", &device_id, "--no-audio"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("scrcpy 启动失败: {}", e))?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    if let Ok(Some(status)) = child.try_wait() {
+        let stderr_text = if let Some(mut stderr) = child.stderr.take() {
+            let mut buf = String::new();
+            let _ = stderr.read_to_string(&mut buf).await;
+            let t = buf.trim().to_string();
+            if t.is_empty() { String::new() } else { format!("\n{}", t) }
+        } else {
+            String::new()
+        };
+        return Err(format!("scrcpy 已退出 (代码: {}){}", status, stderr_text));
+    }
+
+    let state = app.state::<ScrcpyState>();
+    let already_running = {
+        let guard = state.process.lock().map_err(|e| e.to_string())?;
+        guard.is_some()
+    };
+    if already_running {
+        let _ = child.kill().await;
+        return Err("scrcpy 已在运行中".to_string());
+    }
+    {
+        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+        *guard = Some(child);
+    }
+
+    Ok("scrcpy started".to_string())
+}
+
+#[tauri::command]
+pub async fn stop_scrcpy(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<ScrcpyState>();
+    let child_to_kill = {
+        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+        guard.take()
+    };
+
+    if let Some(mut child) = child_to_kill {
+        child.kill().await.map_err(|e| e.to_string())?;
+        let _ = child.wait().await;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn is_scrcpy_running(app: AppHandle) -> Result<bool, String> {
+    let state = app.state::<ScrcpyState>();
+    let guard = state.process.lock().map_err(|e| e.to_string())?;
+    Ok(guard.is_some())
+}
