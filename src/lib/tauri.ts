@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Device } from "@/types/adb";
+import type { Device, RemoteFile } from "@/types/adb";
 
 export async function getDevices() {
   return invoke<Device[]>("get_devices");
@@ -103,4 +103,20 @@ export async function listPackages(deviceId: string) {
 
 export async function updateTrayMenu(deviceSummary: string) {
   return invoke<void>("update_tray_menu", { deviceSummary });
+}
+
+export async function listRemoteFiles(deviceId: string, path: string) {
+  return invoke<RemoteFile[]>("list_remote_files", { deviceId, path });
+}
+
+export async function pushFileToRemote(deviceId: string, localPath: string, remotePath: string) {
+  return invoke<string>("push_file_to_remote", { deviceId, localPath, remotePath });
+}
+
+export async function deleteRemoteFile(deviceId: string, remotePath: string) {
+  return invoke<string>("delete_remote_file", { deviceId, remotePath });
+}
+
+export async function createRemoteDirectory(deviceId: string, remotePath: string) {
+  return invoke<string>("create_remote_directory", { deviceId, remotePath });
 }

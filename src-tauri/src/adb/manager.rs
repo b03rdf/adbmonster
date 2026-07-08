@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use crate::error::AdbResult;
-use crate::types::Device;
+use crate::types::{Device, RemoteFile};
 use super::parser;
 use super::process;
 
@@ -140,4 +140,163 @@ pub async fn list_third_party_packages(device_id: &str) -> AdbResult<Vec<String>
     }
     packages.sort();
     Ok(packages)
+}
+
+pub async fn list_remote_files(device_id: &str, path: &str) -> AdbResult<Vec<RemoteFile>> {
+    let output = process::run_shell_raw(device_id, &format!("ls -la '{}'", path.replace('\'', "'\"'\"'"))).await?;
+    let base = path.trim_end_matches('/');
+    let mut files = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("total") {
+            continue;
+        }
+        if let Some(file) = parse_ls_line(line, base) {
+            if file.name == "." || file.name == ".." {
+                continue;
+            }
+            files.push(file);
+        }
+    }
+
+    files.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(files)
+}
+
+fn parse_ls_line(line: &str, base_path: &str) -> Option<RemoteFile> {
+    if line.is_empty() || line.starts_with("total") {
+        return None;
+    }
+
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 6 {
+        return None;
+    }
+
+    let perms = parts[0];
+    let is_dir = perms.starts_with('d');
+    let is_symlink = perms.starts_with('l');
+
+    // Locate the size field. Most Android `ls` use the standard format, but some omit
+    // the link-count column, so we pick a candidate and fall back to scanning.
+    let has_link_count = parts[1].parse::<u64>().is_ok();
+    let mut size_idx = if has_link_count { 4 } else { 3 };
+
+    if size_idx >= parts.len() || !is_size_token(parts[size_idx]) {
+        for (i, part) in parts.iter().enumerate().skip(2) {
+            if is_size_token(part) {
+                size_idx = i;
+                break;
+            }
+        }
+    }
+
+    if size_idx == 0 || size_idx + 1 >= parts.len() {
+        return None;
+    }
+
+    let size = parse_size(parts[size_idx]);
+
+    // After size comes the date/time, followed by the file name.
+    // Date/time can be 2 columns (YYYY-MM-DD HH:MM) or 3 columns (Mmm DD HH:MM).
+    // We consume tokens while they look like date/time components.
+    let mut time_end_idx = size_idx;
+    for i in (size_idx + 1)..parts.len() {
+        if looks_like_date_or_time(parts[i]) {
+            time_end_idx = i;
+        } else {
+            break;
+        }
+    }
+
+    let name_start_idx = time_end_idx + 1;
+    if name_start_idx >= parts.len() {
+        return None;
+    }
+
+    let time_part = parts[size_idx + 1..=time_end_idx].join(" ");
+    let mut name = parts[name_start_idx..].join(" ");
+
+    if is_symlink {
+        name = name.split(" -> ").next().unwrap_or(&name).to_string();
+    }
+
+    let path = if base_path == "/" {
+        format!("/{}", name)
+    } else {
+        format!("{}/{}", base_path, name)
+    };
+
+    Some(RemoteFile {
+        name,
+        path,
+        is_dir,
+        size,
+        modified: time_part,
+    })
+}
+
+fn is_size_token(s: &str) -> bool {
+    s.parse::<u64>().is_ok() || is_human_size(s)
+}
+
+fn is_human_size(s: &str) -> bool {
+    if s.len() < 2 {
+        return false;
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    matches!(unit, "K" | "M" | "G" | "T" | "P" | "B") && num.parse::<f64>().is_ok()
+}
+
+fn parse_size(s: &str) -> u64 {
+    if let Ok(n) = s.parse::<u64>() {
+        return n;
+    }
+    if s.len() < 2 {
+        return 0;
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n = num.parse::<f64>().unwrap_or(0.0);
+    let multiplier: u64 = match unit {
+        "K" => 1024,
+        "M" => 1024 * 1024,
+        "G" => 1024 * 1024 * 1024,
+        "T" => 1024u64.pow(4),
+        "P" => 1024u64.pow(5),
+        _ => 1,
+    };
+    (n * multiplier as f64) as u64
+}
+
+fn looks_like_date_or_time(s: &str) -> bool {
+    if s.contains(':') {
+        return true;
+    }
+    // YYYY-MM-DD or YYYY/MM/DD
+    if s.len() == 10
+        && (s.chars().nth(4) == Some('-') || s.chars().nth(4) == Some('/'))
+        && (s.chars().nth(7) == Some('-') || s.chars().nth(7) == Some('/'))
+    {
+        return true;
+    }
+    // Month abbreviation
+    const MONTHS: &[&str] = &[
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if MONTHS.contains(&s) {
+        return true;
+    }
+    // Day number in a date
+    if let Ok(d) = s.parse::<u32>() {
+        if (1..=31).contains(&d) {
+            return true;
+        }
+    }
+    false
+}
+
+pub async fn push_file(device_id: &str, local: &str, remote: &str) -> AdbResult<String> {
+    process::run_adb_command(&["-s", device_id, "push", local, remote]).await
 }

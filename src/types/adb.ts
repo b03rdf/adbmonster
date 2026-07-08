@@ -20,3 +20,11 @@ export interface AppConfig {
   clogOutput: string;
   defaultPackage: string;
 }
+
+export interface RemoteFile {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified: string;
+}

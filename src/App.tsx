@@ -133,7 +133,51 @@ function ScrcpyButton() {
   );
 }
 
+const MIN_SIDEBAR_WIDTH = 260;
+const MAX_SIDEBAR_WIDTH = 700;
+const SIDEBAR_WIDTH_KEY = "adb-monster.sidebar-width";
+
+function useSidebarWidth() {
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const parsed = saved ? parseInt(saved, 10) : 320;
+    return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, parsed));
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, width.toString());
+  }, [width]);
+
+  useEffect(() => {
+    if (!isResizing) {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      return;
+    }
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX - 8;
+      setWidth(Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, newWidth)));
+    };
+    const handleMouseUp = () => setIsResizing(false);
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  return { width, isResizing, startResize: () => setIsResizing(true) };
+}
+
 function App() {
+  const { width: sidebarWidth, isResizing, startResize } = useSidebarWidth();
+
   return (
     <div className="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2 border-b shrink-0 bg-card">
@@ -155,8 +199,20 @@ function App() {
           </div>
         </div>
 
-        <div className="w-72 shrink-0 overflow-y-auto">
-          <ToolPanel />
+        <div
+          className="flex flex-row items-stretch shrink-0 h-full"
+          style={{ width: sidebarWidth }}
+        >
+          <div
+            className={`w-1.5 cursor-col-resize shrink-0 rounded-full hover:bg-primary/40 active:bg-primary/70 transition-colors ${
+              isResizing ? "bg-primary/70" : ""
+            }`}
+            onMouseDown={startResize}
+            title="拖动调整宽度"
+          />
+          <div className="flex-1 overflow-y-auto min-w-0">
+            <ToolPanel />
+          </div>
         </div>
       </div>
 

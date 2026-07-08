@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { PackageList } from "@/components/PackageList";
+import { FileManager } from "@/components/FileManager";
 import {
   Camera,
   Monitor,
@@ -66,6 +67,7 @@ export function ToolPanel() {
       <Tabs defaultValue="media" className="w-full">
         <TabsList className="w-full">
           <TabsTrigger value="media" className="flex-1 text-xs">多媒体</TabsTrigger>
+          <TabsTrigger value="files" className="flex-1 text-xs">文件</TabsTrigger>
           <TabsTrigger value="apps" className="flex-1 text-xs">应用</TabsTrigger>
           <TabsTrigger value="tools" className="flex-1 text-xs">工具</TabsTrigger>
         </TabsList>
@@ -109,6 +111,10 @@ export function ToolPanel() {
               录制中...
             </p>
           )}
+        </TabsContent>
+
+        <TabsContent value="files" className="mt-2 space-y-2 h-[420px]">
+          <FileManager />
         </TabsContent>
 
         <TabsContent value="apps" className="mt-2 space-y-2">

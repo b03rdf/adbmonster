@@ -4,3 +4,4 @@ pub mod apps;
 pub mod media;
 pub mod scrcpy;
 pub mod tray;
+pub mod files;

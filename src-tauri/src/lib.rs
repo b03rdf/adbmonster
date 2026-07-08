@@ -61,6 +61,10 @@ pub fn run() {
             commands::scrcpy::start_scrcpy,
             commands::scrcpy::stop_scrcpy,
             commands::scrcpy::is_scrcpy_running,
+            commands::files::list_remote_files,
+            commands::files::push_file_to_remote,
+            commands::files::delete_remote_file,
+            commands::files::create_remote_directory,
             commands::tray::update_tray_menu,
         ])
         .run(tauri::generate_context!())
