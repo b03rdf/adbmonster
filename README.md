@@ -48,7 +48,3 @@ npm run tauri build
 ```
 
 构建产物位于 `src-tauri/target/release/bundle/`。
-
-## 许可
-
-MIT
