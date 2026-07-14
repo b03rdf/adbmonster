@@ -9,8 +9,7 @@ pub fn setup_tray<R: Runtime>(app: &impl Manager<R>) -> Result<(), Box<dyn std::
     let info = MenuItemBuilder::with_id("info", "未连接设备")
         .enabled(false)
         .build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "退出")
-        .build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
 
     let menu = MenuBuilder::new(app)
         .item(&show)
@@ -35,7 +34,7 @@ pub fn setup_tray<R: Runtime>(app: &impl Manager<R>) -> Result<(), Box<dyn std::
                 }
             }
             "quit" => {
-                std::process::exit(0);
+                app.exit(0);
             }
             _ => {}
         })

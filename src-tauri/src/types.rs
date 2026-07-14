@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Device {
     pub id: String,
     pub model: String,
@@ -19,24 +20,13 @@ pub struct LogEntry {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[allow(dead_code)]
 pub struct AppConfig {
     pub adb_path: String,
     pub screenshot_output: String,
     pub clog_output: String,
     pub default_package: String,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            adb_path: String::new(),
-            screenshot_output: String::new(),
-            clog_output: String::new(),
-            default_package: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

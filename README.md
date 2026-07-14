@@ -27,9 +27,9 @@
 ## 前置要求
 
 - [Node.js](https://nodejs.org/) >= 20.19
-- [Rust](https://www.rust-lang.org/) nightly toolchain
-- [Android 调试桥 (adb)](https://developer.android.com/tools/adb) — 自动搜索 PATH 和内置 bundled 目录
-- [scrcpy](https://github.com/Genymobile/scrcpy)（可选，用于投屏功能）
+- [Rust](https://www.rust-lang.org/) stable toolchain
+- [Android 调试桥 (adb)](https://developer.android.com/tools/adb) — 开发时优先使用 PATH，发布包会携带 `scrcpy/adb.exe`
+- [scrcpy](https://github.com/Genymobile/scrcpy) — 当前仓库已在 `src-tauri/scrcpy/` 中内置 Windows 版本
 
 ## 开发
 
@@ -48,3 +48,19 @@ npm run tauri build
 ```
 
 构建产物位于 `src-tauri/target/release/bundle/`。
+
+## 质量检查
+
+```bash
+# 前端类型检查与生产构建，以及 Rust 格式、Clippy 和测试
+npm run check
+```
+
+Vite 7 要求 Node.js 20.19+ 或 22.12+，推荐使用当前 Node.js LTS。项目当前主要面向 Windows，打包资源中包含 Windows 版 ADB 和 scrcpy。
+
+## 使用说明
+
+- 无线连接前，需要在 Android 设备上开启开发者选项和无线调试；不同 Android 版本的配对端口与连接端口可能不同。
+- 单次录屏使用 Android `screenrecord`，最长 180 秒。
+- 关闭主窗口后程序会最小化到系统托盘；请从托盘菜单选择“退出”以完全结束程序。
+- 删除远程文件前会二次确认，后端同时拒绝删除 `/`、`/sdcard`、`/storage` 和 `/data` 等保护路径。

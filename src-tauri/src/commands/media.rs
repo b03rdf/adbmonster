@@ -1,7 +1,7 @@
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
 use crate::adb::manager;
 use crate::adb::process::prepare_command;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
 
 pub struct RecordState {
     pub process: Mutex<Option<tokio::process::Child>>,
@@ -9,10 +9,18 @@ pub struct RecordState {
 }
 
 #[tauri::command]
-pub async fn start_record(
-    device_id: String,
-    app: AppHandle,
-) -> Result<String, String> {
+pub async fn start_record(device_id: String, app: AppHandle) -> Result<String, String> {
+    {
+        let state = app.state::<RecordState>();
+        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("A screen recording is already in progress".to_string());
+            }
+            guard.take();
+        }
+    }
+
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -21,7 +29,15 @@ pub async fn start_record(
 
     let adb_path = manager::find_adb().map_err(|e| e.message)?;
     let child = prepare_command(&adb_path)
-        .args(["-s", &device_id, "shell", "screenrecord", "--time-limit", "180", &remote_path])
+        .args([
+            "-s",
+            &device_id,
+            "shell",
+            "screenrecord",
+            "--time-limit",
+            "180",
+            &remote_path,
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -77,26 +93,29 @@ pub async fn stop_record(
 #[tauri::command]
 pub async fn is_recording(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<RecordState>();
-    let guard = state.process.lock().map_err(|e| e.to_string())?;
-    Ok(guard.is_some())
+    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+    let Some(child) = guard.as_mut() else {
+        return Ok(false);
+    };
+
+    match child.try_wait().map_err(|e| e.to_string())? {
+        Some(_) => {
+            guard.take();
+            Ok(false)
+        }
+        None => Ok(true),
+    }
 }
 
 #[tauri::command]
-pub async fn take_screenshot(
-    device_id: String,
-    output_path: String,
-) -> Result<String, String> {
+pub async fn take_screenshot(device_id: String, output_path: String) -> Result<String, String> {
     manager::save_screenshot_to_file(&device_id, &output_path)
         .await
         .map_err(|e| e.message)
 }
 
 #[tauri::command]
-pub async fn pull_file(
-    device_id: String,
-    remote: String,
-    local: String,
-) -> Result<String, String> {
+pub async fn pull_file(device_id: String, remote: String, local: String) -> Result<String, String> {
     manager::pull_file(&device_id, &remote, &local)
         .await
         .map_err(|e| e.message)

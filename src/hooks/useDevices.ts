@@ -5,9 +5,12 @@ import { getDevices, updateTrayMenu } from "@/lib/tauri";
 export function useDevices() {
   const { devices, currentDevice, isRefreshing, setDevices, setCurrentDevice, setIsRefreshing } =
     useDeviceStore();
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setIsRefreshing(true);
     try {
       const list = await getDevices();
@@ -15,11 +18,16 @@ export function useDevices() {
       updateTrayMenu(
         list.length > 0 ? `已连接 ${list.length} 台设备` : "未连接设备",
       ).catch(() => {});
-      if (currentDevice) {
-        const found = list.find((d) => d.id === currentDevice.id);
+      const selectedDevice = useDeviceStore.getState().currentDevice;
+      if (selectedDevice) {
+        const found = list.find((d) => d.id === selectedDevice.id);
         if (!found) {
           setCurrentDevice(null);
-        } else if (found.status !== currentDevice.status) {
+        } else if (
+          found.status !== selectedDevice.status ||
+          found.model !== selectedDevice.model ||
+          found.androidVersion !== selectedDevice.androidVersion
+        ) {
           setCurrentDevice(found);
         }
       }
@@ -27,14 +35,22 @@ export function useDevices() {
       console.error("Failed to refresh devices:", err);
     } finally {
       setIsRefreshing(false);
+      inFlightRef.current = false;
     }
-  }, [currentDevice, setDevices, setCurrentDevice, setIsRefreshing]);
+  }, [setDevices, setCurrentDevice, setIsRefreshing]);
 
   useEffect(() => {
-    refresh();
-    intervalRef.current = setInterval(refresh, 5000);
+    let cancelled = false;
+    const poll = async () => {
+      await refresh();
+      if (!cancelled) {
+        timeoutRef.current = setTimeout(poll, 5000);
+      }
+    };
+    poll();
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      cancelled = true;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [refresh]);
 

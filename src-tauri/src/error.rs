@@ -7,19 +7,15 @@ pub struct AdbError {
 
 impl AdbError {
     pub fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
+        Self {
+            message: msg.into(),
+        }
     }
 }
 
 impl fmt::Display for AdbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)
-    }
-}
-
-impl From<anyhow::Error> for AdbError {
-    fn from(e: anyhow::Error) -> Self {
-        AdbError::new(e.to_string())
     }
 }
 
@@ -36,7 +32,10 @@ impl From<String> for AdbError {
 }
 
 impl serde::Serialize for AdbError {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.message)
     }
 }

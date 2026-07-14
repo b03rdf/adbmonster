@@ -97,7 +97,11 @@ pub fn parse_logcat_line(line: &str) -> Option<LogLine> {
 
     let timestamp = parts[0].to_string();
     let pid: u32 = parts[1].parse().unwrap_or(0);
-    let tid: u32 = parts[2].trim_end_matches(')').trim_start_matches('(').parse().unwrap_or(0);
+    let tid: u32 = parts[2]
+        .trim_end_matches(')')
+        .trim_start_matches('(')
+        .parse()
+        .unwrap_or(0);
     let level = parts[3].to_string();
     let tag_and_msg = parts[4..].join(" ");
 
@@ -128,4 +132,26 @@ pub fn parse_ip_output(output: &str) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_devices_output, parse_ip_output};
+
+    #[test]
+    fn parses_devices_and_deduplicates_ids() {
+        let output = "List of devices attached\nABC123 device product:x model:Pixel_8 device:x\nABC123 device model:Duplicate\nOFFLINE offline\n";
+        let devices = parse_devices_output(output);
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "ABC123");
+        assert_eq!(devices[0].model, "Pixel 8");
+        assert_eq!(devices[1].status, "offline");
+    }
+
+    #[test]
+    fn extracts_non_loopback_ip() {
+        let output = "1: lo inet 127.0.0.1/8\n2: wlan0 inet 192.168.1.25/24 brd 192.168.1.255\n";
+        assert_eq!(parse_ip_output(output), "192.168.1.25");
+    }
 }

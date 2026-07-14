@@ -2,56 +2,77 @@ import { useEffect, useCallback, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useLogStore } from "@/stores/logStore";
 import { useDeviceStore } from "@/stores/deviceStore";
+import { useAppStore } from "@/stores/appStore";
 import { startLogcat, stopLogcat } from "@/lib/tauri";
 
 export function useLogcat() {
-  const { lines, isRunning, isPaused, addLine, setIsRunning, setIsPaused, clearLogs, setFilterText, filterText } =
+  const { lines, isRunning, isPaused, addLines, setIsRunning, setIsPaused, clearLogs, setFilterText, filterText } =
     useLogStore();
   const currentDevice = useDeviceStore((s) => s.currentDevice);
-  const unlistenRef = useRef<UnlistenFn | null>(null);
+  const setStatusText = useAppStore((s) => s.setStatusText);
+  const unlistenRef = useRef<UnlistenFn[]>([]);
   const isPausedRef = useRef(isPaused);
+  const pendingLinesRef = useRef<string[]>([]);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
   }, [isPaused]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (pendingLinesRef.current.length > 0) {
+        const batch = pendingLinesRef.current;
+        pendingLinesRef.current = [];
+        addLines(batch);
+      }
+    }, 50);
+
+    return () => window.clearInterval(timer);
+  }, [addLines]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const setup = async () => {
-      const unlisten = await listen<string>("logcat:line", (event) => {
-        if (!isPausedRef.current) {
-          addLine(event.payload);
-        }
-      });
+      const listeners = await Promise.all([
+        listen<string>("logcat:line", (event) => {
+          if (!isPausedRef.current) {
+            pendingLinesRef.current.push(event.payload);
+          }
+        }),
+        listen<string>("logcat:stopped", () => setIsRunning(false)),
+        listen<string>("logcat:error", (event) => {
+          setStatusText(`Logcat error: ${event.payload}`);
+        }),
+      ]);
       if (cancelled) {
-        unlisten();
+        listeners.forEach((unlisten) => unlisten());
       } else {
-        unlistenRef.current = unlisten;
+        unlistenRef.current = listeners;
       }
     };
 
-    setup();
+    setup().catch((err) => setStatusText(`Failed to listen for logcat events: ${err}`));
 
     return () => {
       cancelled = true;
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
-      }
+      unlistenRef.current.forEach((unlisten) => unlisten());
+      unlistenRef.current = [];
     };
-  }, [addLine]);
+  }, [setIsRunning, setStatusText]);
 
   const start = useCallback(async () => {
     if (!currentDevice) return;
     try {
+      pendingLinesRef.current = [];
       clearLogs();
       await startLogcat(currentDevice.id, filterText || undefined);
       setIsRunning(true);
     } catch (err) {
       console.error("Failed to start logcat:", err);
+      setStatusText(`Failed to start logcat: ${err}`);
     }
-  }, [currentDevice, filterText, setIsRunning, clearLogs]);
+  }, [currentDevice, filterText, setIsRunning, clearLogs, setStatusText]);
 
   const stop = useCallback(async () => {
     try {
@@ -59,8 +80,9 @@ export function useLogcat() {
       setIsRunning(false);
     } catch (err) {
       console.error("Failed to stop logcat:", err);
+      setStatusText(`Failed to stop logcat: ${err}`);
     }
-  }, [setIsRunning]);
+  }, [setIsRunning, setStatusText]);
 
   const togglePause = useCallback(() => {
     setIsPaused(!isPaused);

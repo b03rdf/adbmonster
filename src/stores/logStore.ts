@@ -6,7 +6,7 @@ interface LogState {
   isPaused: boolean;
   filterText: string;
   maxLines: number;
-  addLine: (line: string) => void;
+  addLines: (lines: string[]) => void;
   setLines: (lines: string[]) => void;
   setIsRunning: (running: boolean) => void;
   setIsPaused: (paused: boolean) => void;
@@ -20,13 +20,16 @@ export const useLogStore = create<LogState>((set) => ({
   isPaused: false,
   filterText: "",
   maxLines: 10000,
-  addLine: (line) =>
+  addLines: (lines) =>
     set((state) => {
-      const newLines = [...state.lines, line];
-      if (newLines.length > state.maxLines) {
-        return { lines: newLines.slice(-state.maxLines) };
-      }
-      return { lines: newLines };
+      if (lines.length === 0) return state;
+      const nextLines = [...state.lines, ...lines];
+      return {
+        lines:
+          nextLines.length > state.maxLines
+            ? nextLines.slice(-state.maxLines)
+            : nextLines,
+      };
     }),
   setLines: (lines) => set({ lines }),
   setIsRunning: (isRunning) => set({ isRunning }),

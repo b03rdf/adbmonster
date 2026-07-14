@@ -1,6 +1,6 @@
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
-use std::process::Stdio;
 use tokio::process::Command;
 
 #[cfg(windows)]

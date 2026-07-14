@@ -1,9 +1,9 @@
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::process::Child;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Child;
 
-    use crate::adb::manager;
+use crate::adb::manager;
 use crate::adb::process::prepare_command;
 
 pub struct LogcatState {
@@ -17,6 +17,16 @@ pub async fn start_logcat(
     app: AppHandle,
 ) -> Result<String, String> {
     let adb_path = manager::find_adb().map_err(|e| e.message)?;
+
+    let previous = {
+        let state = app.state::<LogcatState>();
+        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+        guard.take()
+    };
+    if let Some(mut child) = previous {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
 
     let _clear = prepare_command(&adb_path)
         .args(["-s", &device_id, "logcat", "-c"])
@@ -44,8 +54,11 @@ pub async fn start_logcat(
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let stdout = child.stdout.take()
+    let stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let stderr = child.stderr.take();
 
     let app_handle = app.clone();
     let reader = BufReader::new(stdout);
@@ -60,6 +73,18 @@ pub async fn start_logcat(
         }
         let _ = app_handle.emit("logcat:stopped", "process ended");
     });
+
+    if let Some(stderr) = stderr {
+        let app_handle = app.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    let _ = app_handle.emit("logcat:error", line);
+                }
+            }
+        });
+    }
 
     let state = app.state::<LogcatState>();
     {
@@ -89,6 +114,16 @@ pub async fn stop_logcat(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn is_logcat_running(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<LogcatState>();
-    let process_guard = state.process.lock().map_err(|e| e.to_string())?;
-    Ok(process_guard.is_some())
+    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+    let Some(child) = guard.as_mut() else {
+        return Ok(false);
+    };
+
+    match child.try_wait().map_err(|e| e.to_string())? {
+        Some(_) => {
+            guard.take();
+            Ok(false)
+        }
+        None => Ok(true),
+    }
 }

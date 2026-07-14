@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { open } from "@tauri-apps/plugin-dialog";
 import { PackageList } from "@/components/PackageList";
 import { FileManager } from "@/components/FileManager";
 import {
@@ -48,18 +49,15 @@ export function ToolPanel() {
     }
   };
 
-  const handleFileSelect = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".apk";
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        setApkPath(file.name);
-        install(file.name);
-      }
-    };
-    input.click();
+  const handleFileSelect = async () => {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Android Package", extensions: ["apk"] }],
+    });
+    if (!selected) return;
+    setApkPath(selected);
+    await install(selected);
   };
 
   return (

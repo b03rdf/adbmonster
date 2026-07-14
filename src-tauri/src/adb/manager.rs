@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use crate::error::AdbResult;
-use crate::types::{Device, RemoteFile};
 use super::parser;
 use super::process;
+use crate::error::AdbResult;
+use crate::types::{Device, RemoteFile};
+use std::path::PathBuf;
 
 pub fn find_adb() -> AdbResult<std::path::PathBuf> {
     if let Ok(path) = which::which("adb") {
@@ -10,19 +10,30 @@ pub fn find_adb() -> AdbResult<std::path::PathBuf> {
     }
 
     if let Ok(exe) = std::env::current_exe() {
-        let bundled = exe.parent().unwrap_or(&exe).join("platform-tools").join("adb.exe");
-        if bundled.exists() {
-            return Ok(bundled);
+        let exe_dir = exe.parent().unwrap_or(&exe);
+        for bundled in [
+            exe_dir.join("scrcpy").join("adb.exe"),
+            exe_dir.join("platform-tools").join("adb.exe"),
+            exe_dir.join("resources").join("scrcpy").join("adb.exe"),
+        ] {
+            if bundled.is_file() {
+                return Ok(bundled);
+            }
         }
     }
 
-    let local = PathBuf::from("platform-tools/adb.exe");
-    if local.exists() {
-        return Ok(local);
+    for local in [
+        PathBuf::from("src-tauri/scrcpy/adb.exe"),
+        PathBuf::from("scrcpy/adb.exe"),
+        PathBuf::from("platform-tools/adb.exe"),
+    ] {
+        if local.is_file() {
+            return Ok(local);
+        }
     }
 
     Err(crate::error::AdbError::new(
-        "ADB not found. Please install Android Platform Tools or add adb to PATH.".to_string()
+        "ADB not found. Please install Android Platform Tools or add adb to PATH.".to_string(),
     ))
 }
 
@@ -58,15 +69,18 @@ pub async fn install_apk(device_id: &str, apk_path: &str) -> AdbResult<String> {
 }
 
 pub async fn uninstall_apk(device_id: &str, package_name: &str) -> AdbResult<String> {
+    validate_package_name(package_name)?;
     process::run_adb_command(&["-s", device_id, "uninstall", package_name]).await
 }
 
 pub async fn clear_app(device_id: &str, package_name: &str) -> AdbResult<String> {
+    validate_package_name(package_name)?;
     process::run_shell_command(device_id, &["pm", "clear", package_name]).await
 }
 
 pub async fn get_package_info(device_id: &str, package_name: &str) -> AdbResult<String> {
-    process::run_shell_raw(device_id, &format!("dumpsys package {}", package_name)).await
+    validate_package_name(package_name)?;
+    process::run_shell_command(device_id, &["dumpsys", "package", package_name]).await
 }
 
 pub async fn take_screenshot(device_id: &str) -> AdbResult<Vec<u8>> {
@@ -109,11 +123,13 @@ pub async fn pull_file(device_id: &str, remote: &str, local: &str) -> AdbResult<
 }
 
 pub async fn pull_clog(device_id: &str, package_name: &str, local_dir: &str) -> AdbResult<String> {
+    validate_package_name(package_name)?;
     let remote_path = format!("/sdcard/Android/data/{}/CLog", package_name);
     pull_file(device_id, &remote_path, local_dir).await
 }
 
 pub async fn get_apk_path(device_id: &str, package_name: &str) -> AdbResult<String> {
+    validate_package_name(package_name)?;
     let output = process::run_shell_command(device_id, &["pm", "path", package_name]).await?;
     for line in output.lines() {
         let trimmed = line.trim();
@@ -121,7 +137,10 @@ pub async fn get_apk_path(device_id: &str, package_name: &str) -> AdbResult<Stri
             return Ok(path.to_string());
         }
     }
-    Err(crate::error::AdbError::new(format!("APK path not found for package: {}", package_name)))
+    Err(crate::error::AdbError::new(format!(
+        "APK path not found for package: {}",
+        package_name
+    )))
 }
 
 pub async fn pull_apk(device_id: &str, package_name: &str, local_path: &str) -> AdbResult<String> {
@@ -142,8 +161,32 @@ pub async fn list_third_party_packages(device_id: &str) -> AdbResult<Vec<String>
     Ok(packages)
 }
 
+fn validate_package_name(package_name: &str) -> AdbResult<()> {
+    let valid = !package_name.is_empty()
+        && package_name.len() <= 255
+        && package_name.contains('.')
+        && package_name.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+
+    if valid {
+        Ok(())
+    } else {
+        Err(crate::error::AdbError::new(format!(
+            "Invalid Android package name: {package_name}"
+        )))
+    }
+}
+
 pub async fn list_remote_files(device_id: &str, path: &str) -> AdbResult<Vec<RemoteFile>> {
-    let output = process::run_shell_raw(device_id, &format!("ls -la '{}'", path.replace('\'', "'\"'\"'"))).await?;
+    let output = process::run_shell_raw(
+        device_id,
+        &format!("ls -la '{}'", path.replace('\'', "'\"'\"'")),
+    )
+    .await?;
     let base = path.trim_end_matches('/');
     let mut files = Vec::new();
 
@@ -160,7 +203,11 @@ pub async fn list_remote_files(device_id: &str, path: &str) -> AdbResult<Vec<Rem
         }
     }
 
-    files.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    files.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(files)
 }
 
@@ -202,8 +249,8 @@ fn parse_ls_line(line: &str, base_path: &str) -> Option<RemoteFile> {
     // Date/time can be 2 columns (YYYY-MM-DD HH:MM) or 3 columns (Mmm DD HH:MM).
     // We consume tokens while they look like date/time components.
     let mut time_end_idx = size_idx;
-    for i in (size_idx + 1)..parts.len() {
-        if looks_like_date_or_time(parts[i]) {
+    for (i, part) in parts.iter().enumerate().skip(size_idx + 1) {
+        if looks_like_date_or_time(part) {
             time_end_idx = i;
         } else {
             break;
@@ -282,8 +329,7 @@ fn looks_like_date_or_time(s: &str) -> bool {
     }
     // Month abbreviation
     const MONTHS: &[&str] = &[
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     if MONTHS.contains(&s) {
         return true;
@@ -299,4 +345,44 @@ fn looks_like_date_or_time(s: &str) -> bool {
 
 pub async fn push_file(device_id: &str, local: &str, remote: &str) -> AdbResult<String> {
     process::run_adb_command(&["-s", device_id, "push", local, remote]).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_ls_line, validate_package_name};
+
+    #[test]
+    fn validates_android_package_names() {
+        assert!(validate_package_name("com.example.my_app").is_ok());
+        assert!(validate_package_name("").is_err());
+        assert!(validate_package_name("example").is_err());
+        assert!(validate_package_name("com.example;rm").is_err());
+        assert!(validate_package_name("com..example").is_err());
+    }
+
+    #[test]
+    fn parses_toybox_file_listing_with_spaces() {
+        let file = parse_ls_line(
+            "-rw-rw---- 1 shell everybody 1.5K 2026-07-14 10:30 report file.txt",
+            "/sdcard",
+        )
+        .expect("listing should parse");
+
+        assert_eq!(file.name, "report file.txt");
+        assert_eq!(file.path, "/sdcard/report file.txt");
+        assert_eq!(file.size, 1536);
+        assert!(!file.is_dir);
+    }
+
+    #[test]
+    fn parses_directory_listing() {
+        let file = parse_ls_line(
+            "drwxrwx--- 2 shell everybody 4096 Jul 14 10:30 Download",
+            "/sdcard",
+        )
+        .expect("listing should parse");
+
+        assert!(file.is_dir);
+        assert_eq!(file.path, "/sdcard/Download");
+    }
 }

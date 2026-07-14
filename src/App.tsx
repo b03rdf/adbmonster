@@ -18,6 +18,7 @@ import { connectDevice, tcpipConnect, startScrcpy, stopScrcpy, isScrcpyRunning }
 import { useAppStore } from "@/stores/appStore";
 import { useDeviceStore } from "@/stores/deviceStore";
 import { Plus, Monitor, MonitorOff } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 function ConnectDialog() {
@@ -98,8 +99,35 @@ function ScrcpyButton() {
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-    isScrcpyRunning().then(setRunning);
-  }, []);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unlisten: (() => void) | undefined;
+
+    const syncState = async () => {
+      try {
+        const nextRunning = await isScrcpyRunning();
+        if (!cancelled) setRunning(nextRunning);
+      } catch (err) {
+        if (!cancelled) setStatusText(`Failed to query scrcpy status: ${err}`);
+      } finally {
+        if (!cancelled) timer = setTimeout(syncState, 2000);
+      }
+    };
+
+    syncState();
+    listen("scrcpy:stopped", () => setRunning(false)).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    }).catch((err) => {
+      if (!cancelled) setStatusText(`Failed to listen for scrcpy events: ${err}`);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [setStatusText]);
 
   const toggle = useCallback(async () => {
     if (!currentDevice) return;

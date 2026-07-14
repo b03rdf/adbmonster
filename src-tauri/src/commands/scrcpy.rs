@@ -1,8 +1,8 @@
-use std::sync::Mutex;
 use std::process::Stdio;
-use tokio::process::Command;
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncReadExt;
-use tauri::{AppHandle, Manager};
+use tokio::process::Command;
 
 pub struct ScrcpyState {
     pub process: Mutex<Option<tokio::process::Child>>,
@@ -41,6 +41,17 @@ fn find_scrcpy(resource_dir: Option<&std::path::Path>) -> Result<std::path::Path
 
 #[tauri::command]
 pub async fn start_scrcpy(device_id: String, app: AppHandle) -> Result<String, String> {
+    {
+        let state = app.state::<ScrcpyState>();
+        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("scrcpy 已在运行中".to_string());
+            }
+            guard.take();
+        }
+    }
+
     let resource_dir = app.path().resource_dir().ok();
     let scrcpy_path = find_scrcpy(resource_dir.as_deref())?;
 
@@ -59,22 +70,30 @@ pub async fn start_scrcpy(device_id: String, app: AppHandle) -> Result<String, S
             let mut buf = String::new();
             let _ = stderr.read_to_string(&mut buf).await;
             let t = buf.trim().to_string();
-            if t.is_empty() { String::new() } else { format!("\n{}", t) }
+            if t.is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", t)
+            }
         } else {
             String::new()
         };
         return Err(format!("scrcpy 已退出 (代码: {}){}", status, stderr_text));
     }
 
-    let state = app.state::<ScrcpyState>();
-    let already_running = {
-        let guard = state.process.lock().map_err(|e| e.to_string())?;
-        guard.is_some()
-    };
-    if already_running {
-        let _ = child.kill().await;
-        return Err("scrcpy 已在运行中".to_string());
+    if let Some(mut stderr) = child.stderr.take() {
+        let app_handle = app.clone();
+        tokio::spawn(async move {
+            let mut message = String::new();
+            let _ = stderr.read_to_string(&mut message).await;
+            if !message.trim().is_empty() {
+                let _ = app_handle.emit("scrcpy:error", message);
+            }
+            let _ = app_handle.emit("scrcpy:stopped", ());
+        });
     }
+
+    let state = app.state::<ScrcpyState>();
     {
         let mut guard = state.process.lock().map_err(|e| e.to_string())?;
         *guard = Some(child);
@@ -102,6 +121,16 @@ pub async fn stop_scrcpy(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn is_scrcpy_running(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<ScrcpyState>();
-    let guard = state.process.lock().map_err(|e| e.to_string())?;
-    Ok(guard.is_some())
+    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
+    let Some(child) = guard.as_mut() else {
+        return Ok(false);
+    };
+
+    match child.try_wait().map_err(|e| e.to_string())? {
+        Some(_) => {
+            guard.take();
+            Ok(false)
+        }
+        None => Ok(true),
+    }
 }
