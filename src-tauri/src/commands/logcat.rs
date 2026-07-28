@@ -13,7 +13,7 @@ pub struct LogcatState {
 #[tauri::command]
 pub async fn start_logcat(
     device_id: String,
-    filter: Option<String>,
+    buffer: Option<String>,
     app: AppHandle,
 ) -> Result<String, String> {
     let adb_path = manager::find_adb().map_err(|e| e.message)?;
@@ -28,22 +28,16 @@ pub async fn start_logcat(
         let _ = child.wait().await;
     }
 
-    let _clear = prepare_command(&adb_path)
-        .args(["-s", &device_id, "logcat", "-c"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
-    if let Ok(mut clear_child) = _clear {
-        let _ = clear_child.wait().await;
-    }
-
-    let mut args: Vec<&str> = vec!["-s", &device_id, "logcat", "-v", "brief"];
-    if let Some(ref f) = filter {
-        if !f.is_empty() {
-            args.push("-s");
-            args.push(f);
+    let selected_buffer = match buffer.as_deref().unwrap_or("main") {
+        "main" | "system" | "events" | "radio" | "crash" | "all" => {
+            buffer.unwrap_or_else(|| "main".to_string())
         }
+        value => return Err(format!("Unsupported logcat buffer: {value}")),
+    };
+    let mut args: Vec<&str> = vec!["-s", &device_id, "logcat", "-v", "threadtime"];
+    if selected_buffer != "main" {
+        args.push("-b");
+        args.push(&selected_buffer);
     }
 
     let mut child = prepare_command(&adb_path)
@@ -61,15 +55,31 @@ pub async fn start_logcat(
     let stderr = child.stderr.take();
 
     let app_handle = app.clone();
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
+    let mut lines = BufReader::new(stdout).lines();
 
     tokio::spawn(async move {
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.is_empty() {
-                continue;
+        let mut batch = Vec::with_capacity(128);
+        let mut flush = tokio::time::interval(std::time::Duration::from_millis(50));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) if !line.is_empty() => batch.push(line),
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                _ = flush.tick() => {
+                    if !batch.is_empty() {
+                        let _ = app_handle.emit("logcat:batch", std::mem::take(&mut batch));
+                    }
+                }
             }
-            let _ = app_handle.emit("logcat:line", line);
+        }
+        if !batch.is_empty() {
+            let _ = app_handle.emit("logcat:batch", batch);
         }
         let _ = app_handle.emit("logcat:stopped", "process ended");
     });
@@ -93,6 +103,24 @@ pub async fn start_logcat(
     }
 
     Ok("started".to_string())
+}
+
+#[tauri::command]
+pub async fn export_logcat(lines: Vec<String>, output_path: String) -> Result<String, String> {
+    if output_path.trim().is_empty() {
+        return Err("Output path must not be empty".to_string());
+    }
+    if lines.len() > 50_000 {
+        return Err("Too many log lines to export".to_string());
+    }
+    let mut contents = lines.join("\n");
+    if !contents.is_empty() {
+        contents.push('\n');
+    }
+    tokio::fs::write(&output_path, contents)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(output_path)
 }
 
 #[tauri::command]

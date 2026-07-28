@@ -21,6 +21,8 @@ pub fn run() {
         .manage(commands::scrcpy::ScrcpyState {
             process: Mutex::new(None),
         })
+        .manage(commands::diagnostics::DiagnosticState::default())
+        .manage(commands::network::WeakNetworkState::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
@@ -43,9 +45,14 @@ pub fn run() {
             commands::devices::tcpip_connect,
             commands::devices::pair_device,
             commands::devices::pair_then_connect,
+            commands::devices::auto_connect_local_emulator,
+            commands::diagnostics::get_device_metrics,
+            commands::diagnostics::create_diagnostic_package,
+            commands::diagnostics::get_diagnostic_status,
             commands::logcat::start_logcat,
             commands::logcat::stop_logcat,
             commands::logcat::is_logcat_running,
+            commands::logcat::export_logcat,
             commands::apps::install_apk,
             commands::apps::uninstall_apk,
             commands::apps::clear_app,
@@ -65,6 +72,11 @@ pub fn run() {
             commands::files::push_file_to_remote,
             commands::files::delete_remote_file,
             commands::files::create_remote_directory,
+            commands::network::detect_weak_network_capabilities,
+            commands::network::apply_weak_network,
+            commands::network::stop_weak_network,
+            commands::network::force_restore_weak_network,
+            commands::network::get_weak_network_status,
             commands::tray::update_tray_menu,
         ])
         .run(tauri::generate_context!())

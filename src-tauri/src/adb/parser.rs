@@ -57,6 +57,7 @@ fn parse_device_line(line: &str) -> Option<Device> {
     }
 
     Some(Device {
+        connection_type: connection_type(&id).to_string(),
         id,
         model,
         android_version,
@@ -70,6 +71,19 @@ fn parse_device_line(line: &str) -> Option<Device> {
             status
         },
     })
+}
+
+fn connection_type(device_id: &str) -> &'static str {
+    if device_id.starts_with("emulator-") {
+        "emulator"
+    } else if device_id.parse::<std::net::SocketAddr>().is_ok()
+        || device_id.contains("_adb-tls-connect._tcp")
+        || device_id.starts_with("adb-")
+    {
+        "network"
+    } else {
+        "usb"
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,7 +150,7 @@ pub fn parse_ip_output(output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_devices_output, parse_ip_output};
+    use super::{connection_type, parse_devices_output, parse_ip_output};
 
     #[test]
     fn parses_devices_and_deduplicates_ids() {
@@ -146,7 +160,10 @@ mod tests {
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "ABC123");
         assert_eq!(devices[0].model, "Pixel 8");
+        assert_eq!(devices[0].connection_type, "usb");
         assert_eq!(devices[1].status, "offline");
+        assert_eq!(connection_type("emulator-5554"), "emulator");
+        assert_eq!(connection_type("127.0.0.1:7555"), "network");
     }
 
     #[test]

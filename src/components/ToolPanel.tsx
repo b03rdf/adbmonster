@@ -9,6 +9,8 @@ import { Separator } from "@/components/ui/separator";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PackageList } from "@/components/PackageList";
 import { FileManager } from "@/components/FileManager";
+import { DeviceDashboard } from "@/components/DeviceDashboard";
+import { WeakNetworkPanel } from "@/components/WeakNetworkPanel";
 import {
   Camera,
   Monitor,
@@ -19,6 +21,7 @@ import {
   Info,
   Clipboard,
   Wifi,
+  Gauge,
 } from "lucide-react";
 
 export function ToolPanel() {
@@ -62,13 +65,18 @@ export function ToolPanel() {
 
   return (
     <Card className="p-3">
-      <Tabs defaultValue="media" className="w-full">
+      <Tabs defaultValue="dashboard" className="w-full">
         <TabsList className="w-full">
+          <TabsTrigger value="dashboard" className="flex-1 text-xs"><Gauge className="h-3 w-3 mr-1" />概览</TabsTrigger>
           <TabsTrigger value="media" className="flex-1 text-xs">多媒体</TabsTrigger>
           <TabsTrigger value="files" className="flex-1 text-xs">文件</TabsTrigger>
           <TabsTrigger value="apps" className="flex-1 text-xs">应用</TabsTrigger>
           <TabsTrigger value="tools" className="flex-1 text-xs">工具</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="dashboard" className="mt-2 space-y-2">
+          <DeviceDashboard />
+        </TabsContent>
 
         <TabsContent value="media" className="mt-2 space-y-2">
           <div className="grid grid-cols-2 gap-2">
@@ -248,6 +256,9 @@ export function ToolPanel() {
               CLog
             </Button>
           </div>
+
+          <Separator />
+          <WeakNetworkPanel />
         </TabsContent>
       </Tabs>
     </Card>

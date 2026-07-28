@@ -6,7 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { startLogcat, stopLogcat } from "@/lib/tauri";
 
 export function useLogcat() {
-  const { lines, isRunning, isPaused, addLines, setIsRunning, setIsPaused, clearLogs, setFilterText, filterText } =
+  const { lines, isRunning, isPaused, errorCount, crashCount, anrCount, addLines, setIsRunning, setIsPaused, clearLogs: clearStoreLogs, setFilterText, filterText } =
     useLogStore();
   const currentDevice = useDeviceStore((s) => s.currentDevice);
   const setStatusText = useAppStore((s) => s.setStatusText);
@@ -20,7 +20,7 @@ export function useLogcat() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (pendingLinesRef.current.length > 0) {
+      if (!isPausedRef.current && pendingLinesRef.current.length > 0) {
         const batch = pendingLinesRef.current;
         pendingLinesRef.current = [];
         addLines(batch);
@@ -35,9 +35,10 @@ export function useLogcat() {
 
     const setup = async () => {
       const listeners = await Promise.all([
-        listen<string>("logcat:line", (event) => {
-          if (!isPausedRef.current) {
-            pendingLinesRef.current.push(event.payload);
+        listen<string[]>("logcat:batch", (event) => {
+          pendingLinesRef.current.push(...event.payload);
+          if (pendingLinesRef.current.length > 10000) {
+            pendingLinesRef.current = pendingLinesRef.current.slice(-10000);
           }
         }),
         listen<string>("logcat:stopped", () => setIsRunning(false)),
@@ -61,18 +62,23 @@ export function useLogcat() {
     };
   }, [setIsRunning, setStatusText]);
 
-  const start = useCallback(async () => {
+  const clearLogs = useCallback(() => {
+    pendingLinesRef.current = [];
+    clearStoreLogs();
+  }, [clearStoreLogs]);
+
+  const start = useCallback(async (buffer = "main") => {
     if (!currentDevice) return;
     try {
       pendingLinesRef.current = [];
       clearLogs();
-      await startLogcat(currentDevice.id, filterText || undefined);
+      await startLogcat(currentDevice.id, buffer);
       setIsRunning(true);
     } catch (err) {
       console.error("Failed to start logcat:", err);
       setStatusText(`Failed to start logcat: ${err}`);
     }
-  }, [currentDevice, filterText, setIsRunning, clearLogs, setStatusText]);
+  }, [currentDevice, setIsRunning, clearLogs, setStatusText]);
 
   const stop = useCallback(async () => {
     try {
@@ -99,6 +105,9 @@ export function useLogcat() {
     isRunning,
     isPaused,
     filterText,
+    errorCount,
+    crashCount,
+    anrCount,
     start,
     stop,
     togglePause,

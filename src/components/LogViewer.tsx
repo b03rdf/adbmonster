@@ -5,13 +5,18 @@ import { useDeviceStore } from "@/stores/deviceStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { save } from "@tauri-apps/plugin-dialog";
+import { exportLogcat } from "@/lib/tauri";
+import { useAppStore } from "@/stores/appStore";
 import {
   Play, Square, Pause, Trash2, Filter,
-  ChevronUp, ChevronDown, Search, X,
+  ChevronUp, ChevronDown, Search, X, Download, AlertTriangle,
 } from "lucide-react";
 
 const LEVEL_ORDER = ["V", "D", "I", "W", "E", "F"] as const;
 type LogLevel = typeof LEVEL_ORDER[number];
+type LogBuffer = "main" | "system" | "events" | "radio" | "crash" | "all";
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
   V: "text-gray-400",
@@ -143,9 +148,10 @@ function highlightText(text: string, query: string): React.ReactNode {
 }
 
 export function LogViewer() {
-  const { lines, isRunning, isPaused, filterText, start, stop, togglePause, clearLogs, setFilterText } =
+  const { lines, isRunning, isPaused, filterText, errorCount, crashCount, anrCount, start, stop, togglePause, clearLogs, setFilterText } =
     useLogcat();
   const currentDevice = useDeviceStore((s) => s.currentDevice);
+  const setStatusText = useAppStore((s) => s.setStatusText);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
@@ -155,6 +161,18 @@ export function LogViewer() {
   const [showSearch, setShowSearch] = useState(false);
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [buffer, setBuffer] = useState<LogBuffer>("main");
+  const [regexMode, setRegexMode] = useState(false);
+
+  const filterRegex = useMemo(() => {
+    if (!regexMode || !filterText) return null;
+    try {
+      return new RegExp(filterText, "i");
+    } catch {
+      return null;
+    }
+  }, [filterText, regexMode]);
+  const regexInvalid = regexMode && Boolean(filterText) && !filterRegex;
 
   const toggleLevel = (level: LogLevel) => {
     setActiveLevels((prev) => {
@@ -175,13 +193,29 @@ export function LogViewer() {
       });
     }
 
-    if (filterText) {
+    if (filterText && regexMode && filterRegex) {
+      result = result.filter((line) => filterRegex.test(line));
+    } else if (filterText && !regexMode) {
       const q = filterText.toLowerCase();
       result = result.filter((l) => l.toLowerCase().includes(q));
     }
 
     return result;
-  }, [lines, activeLevels, filterText]);
+  }, [lines, activeLevels, filterText, regexMode, filterRegex]);
+
+  const handleExport = useCallback(async () => {
+    const path = await save({
+      defaultPath: `logcat-${Date.now()}.txt`,
+      filters: [{ name: "Logcat Text", extensions: ["txt", "log"] }],
+    });
+    if (!path) return;
+    try {
+      const result = await exportLogcat(filteredLines, path);
+      setStatusText(`日志已导出：${result}`);
+    } catch (reason) {
+      setStatusText(`日志导出失败：${reason}`);
+    }
+  }, [filteredLines, setStatusText]);
 
   const searchMatchIndices = useMemo(() => {
     if (!searchText) return [];
@@ -239,7 +273,7 @@ export function LogViewer() {
         <Button
           variant={isRunning ? "default" : "outline"}
           size="sm"
-          onClick={isRunning ? stop : start}
+          onClick={isRunning ? stop : () => start(buffer)}
           disabled={!currentDevice}
           title={isRunning ? "停止日志" : "开始日志"}
           className="h-7 w-7 p-0 shrink-0"
@@ -287,13 +321,35 @@ export function LogViewer() {
         })}
 
         <Separator orientation="vertical" className="h-5" />
+
+        <Select value={buffer} onValueChange={(value) => setBuffer(value as LogBuffer)} disabled={isRunning}>
+          <SelectTrigger className="h-7 w-20 text-[10px] px-2">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="main">Main</SelectItem>
+            <SelectItem value="system">System</SelectItem>
+            <SelectItem value="events">Events</SelectItem>
+            <SelectItem value="radio">Radio</SelectItem>
+            <SelectItem value="crash">Crash</SelectItem>
+            <SelectItem value="all">全部</SelectItem>
+          </SelectContent>
+        </Select>
         <Filter className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         <Input
-          className="h-7 w-36 text-xs"
-          placeholder="过滤文本..."
+          className={`h-7 w-36 text-xs ${regexInvalid ? "border-destructive" : ""}`}
+          placeholder={regexMode ? "正则表达式..." : "过滤文本..."}
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
+          title={regexInvalid ? "正则表达式无效" : undefined}
         />
+        <button
+          onClick={() => setRegexMode((value) => !value)}
+          title="正则表达式过滤"
+          className={`h-6 px-1.5 rounded text-[10px] font-mono ${regexMode ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent"}`}
+        >
+          .*
+        </button>
 
         <button
           onClick={() => setAutoScroll(!autoScroll)}
@@ -308,6 +364,22 @@ export function LogViewer() {
         </button>
 
         <div className="flex-1" />
+
+        {(crashCount > 0 || anrCount > 0) && (
+          <span className="flex items-center gap-1 text-[10px] text-destructive whitespace-nowrap" title={`错误 ${errorCount}，崩溃 ${crashCount}，ANR ${anrCount}`}>
+            <AlertTriangle className="h-3 w-3" />
+            {crashCount} 崩溃 / {anrCount} ANR
+          </span>
+        )}
+
+        <button
+          onClick={handleExport}
+          disabled={filteredLines.length === 0}
+          title="导出当前筛选结果"
+          className="h-7 w-7 rounded flex items-center justify-center shrink-0 hover:bg-accent/50 disabled:opacity-40"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
 
         <button
           onClick={() => setShowSearch(!showSearch)}

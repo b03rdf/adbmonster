@@ -1,7 +1,9 @@
 pub mod apps;
 pub mod devices;
+pub mod diagnostics;
 pub mod files;
 pub mod logcat;
 pub mod media;
+pub mod network;
 pub mod scrcpy;
 pub mod tray;

@@ -1,8 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Device, RemoteFile } from "@/types/adb";
+import type {
+  AutoConnectResult,
+  Device,
+  DeviceMetrics,
+  DiagnosticStatus,
+  RemoteFile,
+  WeakNetworkCapabilities,
+  WeakNetworkConfig,
+  WeakNetworkStatus,
+} from "@/types/adb";
 
 export async function getDevices() {
   return invoke<Device[]>("get_devices");
+}
+
+export async function autoConnectLocalEmulator(address: string) {
+  return invoke<AutoConnectResult>("auto_connect_local_emulator", { address });
 }
 
 export async function connectDevice(ip: string) {
@@ -41,8 +54,8 @@ export async function isScrcpyRunning() {
   return invoke<boolean>("is_scrcpy_running");
 }
 
-export async function startLogcat(deviceId: string, filter?: string) {
-  return invoke<string>("start_logcat", { deviceId, filter: filter || null });
+export async function startLogcat(deviceId: string, buffer = "main") {
+  return invoke<string>("start_logcat", { deviceId, buffer });
 }
 
 export async function stopLogcat() {
@@ -51,6 +64,10 @@ export async function stopLogcat() {
 
 export async function isLogcatRunning() {
   return invoke<boolean>("is_logcat_running");
+}
+
+export async function exportLogcat(lines: string[], outputPath: string) {
+  return invoke<string>("export_logcat", { lines, outputPath });
 }
 
 export async function takeScreenshot(deviceId: string, outputPath: string) {
@@ -119,4 +136,46 @@ export async function deleteRemoteFile(deviceId: string, remotePath: string) {
 
 export async function createRemoteDirectory(deviceId: string, remotePath: string) {
   return invoke<string>("create_remote_directory", { deviceId, remotePath });
+}
+
+export async function getDeviceMetrics(deviceId: string) {
+  return invoke<DeviceMetrics>("get_device_metrics", { deviceId });
+}
+
+export async function createDiagnosticPackage(
+  deviceId: string,
+  packageName: string | null,
+  outputPath: string,
+  includeBugreport: boolean,
+) {
+  return invoke<string>("create_diagnostic_package", {
+    deviceId,
+    packageName,
+    outputPath,
+    includeBugreport,
+  });
+}
+
+export async function getDiagnosticStatus() {
+  return invoke<DiagnosticStatus>("get_diagnostic_status");
+}
+
+export async function detectWeakNetworkCapabilities(deviceId: string) {
+  return invoke<WeakNetworkCapabilities>("detect_weak_network_capabilities", { deviceId });
+}
+
+export async function applyWeakNetwork(deviceId: string, config: WeakNetworkConfig) {
+  return invoke<WeakNetworkStatus>("apply_weak_network", { deviceId, config });
+}
+
+export async function stopWeakNetwork() {
+  return invoke<WeakNetworkStatus>("stop_weak_network");
+}
+
+export async function forceRestoreWeakNetwork(deviceId: string) {
+  return invoke<WeakNetworkStatus>("force_restore_weak_network", { deviceId });
+}
+
+export async function getWeakNetworkStatus() {
+  return invoke<WeakNetworkStatus>("get_weak_network_status");
 }

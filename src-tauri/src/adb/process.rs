@@ -77,17 +77,16 @@ pub async fn run_adb_command(args: &[&str]) -> AdbResult<String> {
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .output()
         .await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if !stderr.is_empty() {
-            return Err(AdbError::new(stderr));
-        }
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    parse_command_output(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
 }
 
 pub async fn run_shell_command(device_id: &str, shell_args: &[&str]) -> AdbResult<String> {
@@ -98,4 +97,75 @@ pub async fn run_shell_command(device_id: &str, shell_args: &[&str]) -> AdbResul
 
 pub async fn run_shell_raw(device_id: &str, command: &str) -> AdbResult<String> {
     run_adb_command(&["-s", device_id, "shell", command]).await
+}
+
+fn parse_command_output(
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> AdbResult<String> {
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+
+    if !success {
+        let details = [stdout.as_str(), stderr.as_str()]
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let message = if details.is_empty() {
+            match exit_code {
+                Some(code) => format!("ADB command failed with exit code {code}"),
+                None => "ADB command was terminated before it completed".to_string(),
+            }
+        } else {
+            details
+        };
+
+        return Err(AdbError::new(message));
+    }
+
+    // ADB normally writes successful command output to stdout. Some versions emit
+    // informational text on stderr, so preserve it when stdout is empty.
+    if stdout.is_empty() {
+        Ok(stderr)
+    } else {
+        Ok(stdout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_command_output;
+
+    #[test]
+    fn reports_failed_command_when_error_is_only_on_stdout() {
+        let error = parse_command_output(
+            false,
+            Some(1),
+            b"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]",
+            b"",
+        )
+        .expect_err("non-zero exit status must be an error");
+
+        assert!(error.message.contains("INSTALL_FAILED_VERSION_DOWNGRADE"));
+    }
+
+    #[test]
+    fn reports_failed_command_when_adb_produces_no_output() {
+        let error = parse_command_output(false, Some(7), b"", b"")
+            .expect_err("non-zero exit status must be an error");
+
+        assert_eq!(error.message, "ADB command failed with exit code 7");
+    }
+
+    #[test]
+    fn trims_successful_output() {
+        let output = parse_command_output(true, Some(0), b"Success\r\n", b"")
+            .expect("successful command should return its output");
+
+        assert_eq!(output, "Success");
+    }
 }

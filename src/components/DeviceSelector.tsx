@@ -7,8 +7,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { useDevices } from "@/hooks/useDevices";
-import { RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { Cable, MonitorSmartphone, RefreshCw, Settings2, Wifi, WifiOff } from "lucide-react";
 
 function statusColor(status: string) {
   switch (status) {
@@ -38,7 +48,19 @@ function DeviceStatus({ status }: { status: string }) {
 }
 
 export function DeviceSelector() {
-  const { devices, currentDevice, isRefreshing, setCurrentDevice, refresh } = useDevices();
+  const {
+    devices,
+    currentDevice,
+    isRefreshing,
+    setCurrentDevice,
+    refresh,
+    autoConnectEnabled,
+    setAutoConnectEnabled,
+    emulatorAddress,
+    setEmulatorAddress,
+    autoConnectStatus,
+    testEmulatorConnection,
+  } = useDevices();
 
   const handleValueChange = (value: string) => {
     const device = devices.find((d) => d.id === value) || null;
@@ -61,6 +83,11 @@ export function DeviceSelector() {
             {devices.map((device) => (
               <SelectItem key={device.id} value={device.id}>
                 <span className="flex items-center gap-2">
+                  {device.connectionType === "usb" ? (
+                    <Cable className="h-3 w-3" />
+                  ) : (
+                    <MonitorSmartphone className="h-3 w-3" />
+                  )}
                   <span>{device.model || device.id}</span>
                   <DeviceStatus status={device.status} />
                 </span>
@@ -85,6 +112,58 @@ export function DeviceSelector() {
       >
         <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
       </Button>
+
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button variant="outline" size="icon" title="自动连接设置">
+            <Settings2 className="h-4 w-4" />
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-[430px]">
+          <DialogHeader>
+            <DialogTitle>自动连接设备</DialogTitle>
+            <DialogDescription>
+              优先选择USB调试设备；没有可用设备时检测本地模拟器端口。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span>
+                <span className="block font-medium">启用自动连接</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">插入USB后自动选中，断开后自动切换模拟器</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={autoConnectEnabled}
+                onChange={(event) => setAutoConnectEnabled(event.target.checked)}
+              />
+            </label>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">本地模拟器地址</label>
+              <Input
+                value={emulatorAddress}
+                onChange={(event) => setEmulatorAddress(event.target.value)}
+                placeholder="127.0.0.1:7555"
+                disabled={!autoConnectEnabled}
+              />
+              <p className="text-[10px] text-muted-foreground">出于安全考虑，只允许127.0.0.1或::1回环地址。</p>
+            </div>
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs break-all">
+              {autoConnectStatus}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={testEmulatorConnection}
+              disabled={!autoConnectEnabled || !emulatorAddress.trim()}
+            >
+              立即检测并连接
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

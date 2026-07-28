@@ -1,8 +1,8 @@
 use super::parser;
 use super::process;
-use crate::error::AdbResult;
+use crate::error::{AdbError, AdbResult};
 use crate::types::{Device, RemoteFile};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn find_adb() -> AdbResult<std::path::PathBuf> {
     if let Ok(path) = which::which("adb") {
@@ -65,7 +65,62 @@ pub async fn pair_device(ip: &str, port: u16, code: &str) -> AdbResult<String> {
 }
 
 pub async fn install_apk(device_id: &str, apk_path: &str) -> AdbResult<String> {
-    process::run_adb_command(&["-s", device_id, "install", "-r", apk_path]).await
+    validate_apk_path(apk_path)?;
+
+    let output = process::run_adb_command(&["-s", device_id, "install", "-r", apk_path]).await?;
+
+    // Older ADB/platform-tools releases may print an install failure while still
+    // returning a successful process exit status. Do not surface that as success.
+    if is_install_failure(&output) {
+        return Err(AdbError::new(output));
+    }
+
+    if output.is_empty() {
+        Ok("APK installed successfully".to_string())
+    } else {
+        Ok(output)
+    }
+}
+
+fn validate_apk_path(apk_path: &str) -> AdbResult<()> {
+    if apk_path.trim().is_empty() {
+        return Err(AdbError::new("APK path cannot be empty"));
+    }
+
+    let path = Path::new(apk_path);
+    let has_apk_extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("apk"));
+
+    if !has_apk_extension {
+        return Err(AdbError::new(format!(
+            "Selected file is not an APK: {}",
+            path.display()
+        )));
+    }
+
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(AdbError::new(format!(
+            "APK path is not a file: {}",
+            path.display()
+        ))),
+        Err(error) => Err(AdbError::new(format!(
+            "Cannot access APK file '{}': {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn is_install_failure(output: &str) -> bool {
+    output.lines().any(|line| {
+        let line = line.trim();
+        let lower = line.to_ascii_lowercase();
+        line.starts_with("Failure [")
+            || lower.starts_with("failure:")
+            || lower.contains("failed to install")
+    })
 }
 
 pub async fn uninstall_apk(device_id: &str, package_name: &str) -> AdbResult<String> {
@@ -161,7 +216,7 @@ pub async fn list_third_party_packages(device_id: &str) -> AdbResult<Vec<String>
     Ok(packages)
 }
 
-fn validate_package_name(package_name: &str) -> AdbResult<()> {
+pub(crate) fn validate_package_name(package_name: &str) -> AdbResult<()> {
     let valid = !package_name.is_empty()
         && package_name.len() <= 255
         && package_name.contains('.')
@@ -349,7 +404,7 @@ pub async fn push_file(device_id: &str, local: &str, remote: &str) -> AdbResult<
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_ls_line, validate_package_name};
+    use super::{is_install_failure, parse_ls_line, validate_package_name};
 
     #[test]
     fn validates_android_package_names() {
@@ -360,6 +415,16 @@ mod tests {
         assert!(validate_package_name("com..example").is_err());
     }
 
+    #[test]
+    fn recognizes_install_failures_returned_as_command_output() {
+        assert!(is_install_failure(
+            "Performing Streamed Install\nFailure [INSTALL_FAILED_TEST_ONLY]"
+        ));
+        assert!(is_install_failure(
+            "adb: failed to install example.apk: Failure [INSTALL_FAILED_INVALID_APK]"
+        ));
+        assert!(!is_install_failure("Performing Streamed Install\nSuccess"));
+    }
     #[test]
     fn parses_toybox_file_listing_with_spaces() {
         let file = parse_ls_line(
