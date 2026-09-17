@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Android VPN helper build outputs
+vpn-helper/.gradle/
+vpn-helper/app/build/
+vpn-helper/local.properties
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

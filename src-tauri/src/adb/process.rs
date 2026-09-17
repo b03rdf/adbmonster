@@ -2,6 +2,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -89,14 +90,55 @@ pub async fn run_adb_command(args: &[&str]) -> AdbResult<String> {
     )
 }
 
+pub async fn run_adb_command_with_timeout(args: &[&str], duration: Duration) -> AdbResult<String> {
+    timeout(duration, run_adb_command(args))
+        .await
+        .map_err(|_| {
+            AdbError::new(format!(
+                "ADB command timed out after {} seconds",
+                duration.as_secs()
+            ))
+        })?
+}
+
 pub async fn run_shell_command(device_id: &str, shell_args: &[&str]) -> AdbResult<String> {
     let mut args = vec!["-s", device_id, "shell"];
     args.extend_from_slice(shell_args);
     run_adb_command(&args).await
 }
 
+pub async fn run_shell_command_with_timeout(
+    device_id: &str,
+    shell_args: &[&str],
+    duration: Duration,
+) -> AdbResult<String> {
+    timeout(duration, run_shell_command(device_id, shell_args))
+        .await
+        .map_err(|_| {
+            AdbError::new(format!(
+                "ADB shell command timed out after {} seconds",
+                duration.as_secs()
+            ))
+        })?
+}
+
 pub async fn run_shell_raw(device_id: &str, command: &str) -> AdbResult<String> {
     run_adb_command(&["-s", device_id, "shell", command]).await
+}
+
+pub async fn run_shell_raw_with_timeout(
+    device_id: &str,
+    command: &str,
+    duration: Duration,
+) -> AdbResult<String> {
+    timeout(duration, run_shell_raw(device_id, command))
+        .await
+        .map_err(|_| {
+            AdbError::new(format!(
+                "ADB shell command timed out after {} seconds",
+                duration.as_secs()
+            ))
+        })?
 }
 
 fn parse_command_output(

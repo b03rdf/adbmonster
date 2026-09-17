@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -78,24 +78,32 @@ export function DeviceDashboard() {
   const [includeBugreport, setIncludeBugreport] = useState(true);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosticProgress, setDiagnosticProgress] = useState<DiagnosticProgress | null>(null);
+  const metricsRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!currentDevice) return;
+    const requestId = ++metricsRequestRef.current;
+    const deviceId = currentDevice.id;
     setLoading(true);
     try {
-      const nextMetrics = await getDeviceMetrics(currentDevice.id);
+      const nextMetrics = await getDeviceMetrics(deviceId);
+      if (requestId !== metricsRequestRef.current) return;
       setMetrics(nextMetrics);
       setError(null);
     } catch (reason) {
+      if (requestId !== metricsRequestRef.current) return;
       setError(String(reason));
     } finally {
-      setLoading(false);
+      if (requestId === metricsRequestRef.current) setLoading(false);
     }
   }, [currentDevice]);
 
   useEffect(() => {
     if (!currentDevice) {
+      metricsRequestRef.current += 1;
       setMetrics(null);
+      setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;

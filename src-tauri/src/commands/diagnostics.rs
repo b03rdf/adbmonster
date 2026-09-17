@@ -11,10 +11,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use zip::write::SimpleFileOptions;
 
 use crate::adb::{manager, process};
+use crate::tasks::{self, Task, TaskKind};
 use crate::types::{DeviceMetrics, DiagnosticProgress, DiagnosticStatus};
 
 #[derive(Default)]
 pub struct DiagnosticState {
+    task: Mutex<Option<Task>>,
     running: AtomicBool,
     progress: Mutex<Option<DiagnosticProgress>>,
 }
@@ -71,49 +73,101 @@ pub async fn create_diagnostic_package(
         manager::validate_package_name(package).map_err(|error| error.message)?;
     }
 
+    let task = tasks::begin(&app, TaskKind::Diagnostic, &device_id, package_name.clone())?;
+    let _guard = task.guard();
     let state = app.state::<DiagnosticState>();
-    if state
-        .running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Err("A diagnostic package is already being generated".to_string());
-    }
-
-    let temp_dir = diagnostic_temp_dir(&device_id);
+    state.running.store(true, Ordering::Release);
+    *state.task.lock().map_err(|error| error.to_string())? = Some(task.clone());
+    let temp_dir = diagnostic_temp_dir(&format!("{device_id}-{}", task.id));
+    let temporary = PathBuf::from(format!("{output_path}.{}.partial", task.id));
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
+    let mut created = false;
+    let archive_owned = std::sync::Arc::new(AtomicBool::new(false));
     let result = async {
-        emit_progress(&app, "prepare", "正在准备诊断目录", 3);
-        tokio::fs::create_dir_all(&temp_dir)
+        task.run(600, async {
+            tokio::fs::create_dir(&temp_dir)
+                .await
+                .map_err(|error| error.to_string())?;
+            created = true;
+            emit_progress(&app, "prepare", "正在准备诊断目录", 3);
+            collect_diagnostic_files(
+                &device_id,
+                package_name.as_deref().filter(|value| !value.is_empty()),
+                include_bugreport,
+                &temp_dir,
+                &app,
+            )
+            .await
+        })
+        .await?;
+        emit_progress(&app, "archive", "正在压缩诊断文件，可取消", 92);
+        let destination = PathBuf::from(&output_path);
+        if let Some(parent) = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let source = temp_dir.clone();
+        let zip_path = temporary.clone();
+        let zip_task = task.clone();
+        let owned = archive_owned.clone();
+        // Await the worker even after cancellation: it checks between chunks, so
+        // cleanup never races a detached worker still accessing the directory.
+        tokio::task::spawn_blocking(move || {
+            create_zip_checked(&source, &zip_path, &owned, || {
+                if let Some(reason) = zip_task.cancel_reason() {
+                    return Err(reason);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err("诊断任务超时（600 秒）".to_string());
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        if let Some(reason) = task.cancel_reason() {
+            return Err(reason);
+        }
+        tokio::fs::rename(&temporary, &destination)
             .await
             .map_err(|error| error.to_string())?;
-        collect_diagnostic_files(
-            &device_id,
-            package_name.as_deref().filter(|value| !value.is_empty()),
-            &output_path,
-            include_bugreport,
-            &temp_dir,
-            &app,
-        )
-        .await
+        task.artifact(&output_path);
+        emit_progress(&app, "complete", "诊断包生成完成", 100);
+        Ok(output_path)
     }
     .await;
 
-    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    let mut cleanup = "临时文件已清理；未完成的报告不会替换已有文件".to_string();
+    if archive_owned.load(Ordering::Acquire) && temporary.exists() {
+        if let Err(error) = tokio::fs::remove_file(&temporary).await {
+            cleanup = format!("临时报告清理失败 {}：{error}", temporary.display());
+        }
+    }
+    if created {
+        if let Err(error) = tokio::fs::remove_dir_all(&temp_dir).await {
+            cleanup = format!("诊断临时目录清理失败 {}：{error}", temp_dir.display());
+        }
+    }
     state.running.store(false, Ordering::Release);
     if let Err(error) = &result {
-        emit_progress(&app, "error", &format!("诊断包生成失败：{error}"), 0);
+        emit_progress(&app, "error", &format!("诊断任务结束：{error}"), 0);
     }
+    state.task.lock().map_err(|error| error.to_string())?.take();
+    task.finish_result(&result, &cleanup);
     result
 }
 
 async fn collect_diagnostic_files(
     device_id: &str,
     package_name: Option<&str>,
-    output_path: &str,
     include_bugreport: bool,
     temp_dir: &Path,
     app: &AppHandle,
-) -> Result<String, String> {
+) -> Result<(), String> {
     emit_progress(app, "device", "正在收集设备基础信息", 10);
     let properties = capture_or_error(device_id, &["getprop"]).await;
     write_text(temp_dir.join("device-properties.txt"), &properties).await?;
@@ -193,26 +247,7 @@ async fn collect_diagnostic_files(
         capture_bugreport(device_id, &temp_dir.join("bugreport.zip")).await;
     }
 
-    emit_progress(app, "archive", "正在压缩诊断文件", 92);
-    let source = temp_dir.to_path_buf();
-    let destination = PathBuf::from(output_path);
-    if let Some(parent) = destination.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    let destination_for_zip = destination.clone();
-    let archive_result =
-        tokio::task::spawn_blocking(move || create_zip(&source, &destination_for_zip))
-            .await
-            .map_err(|error| error.to_string())?;
-    if let Err(error) = archive_result {
-        let _ = tokio::fs::remove_file(&destination).await;
-        return Err(error);
-    }
-
-    emit_progress(app, "complete", "诊断包生成完成", 100);
-    Ok(destination.to_string_lossy().to_string())
+    Ok(())
 }
 
 async fn capture_shell(device_id: &str, args: &[&str]) -> Result<String, String> {
@@ -262,11 +297,28 @@ async fn write_text(path: PathBuf, contents: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn create_zip(source_dir: &Path, destination: &Path) -> Result<(), String> {
-    let file = File::create(destination).map_err(|error| error.to_string())?;
+    create_zip_checked(source_dir, destination, &AtomicBool::new(false), || Ok(()))
+}
+
+fn create_zip_checked(
+    source_dir: &Path,
+    destination: &Path,
+    owned: &AtomicBool,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    check()?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| error.to_string())?;
+    owned.store(true, Ordering::Release);
     let mut archive = zip::ZipWriter::new(file);
     let entries = std::fs::read_dir(source_dir).map_err(|error| error.to_string())?;
     for entry in entries {
+        check()?;
         let entry = entry.map_err(|error| error.to_string())?;
         if !entry
             .file_type()
@@ -290,6 +342,7 @@ fn create_zip(source_dir: &Path, destination: &Path) -> Result<(), String> {
         let mut source = File::open(entry.path()).map_err(|error| error.to_string())?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
+            check()?;
             let count = source
                 .read(&mut buffer)
                 .map_err(|error| error.to_string())?;
@@ -324,6 +377,11 @@ fn diagnostic_temp_dir(device_id: &str) -> PathBuf {
 }
 
 fn emit_progress(app: &AppHandle, stage: &str, message: &str, percent: u8) {
+    if let Ok(task) = app.state::<DiagnosticState>().task.lock() {
+        if let Some(task) = task.as_ref() {
+            task.progress(Some(percent), message);
+        }
+    }
     let progress = DiagnosticProgress {
         stage: stage.to_string(),
         message: message.to_string(),
@@ -495,5 +553,43 @@ mod tests {
         assert!(std::fs::metadata(&destination).expect("zip metadata").len() > 0);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelled_archive_does_not_replace_an_existing_report() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = std::env::temp_dir().join(format!(
+            "adb-monster-cancel-zip-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("logcat.txt"), vec![b'x'; 200_000]).unwrap();
+        let destination = root.join("report.zip");
+        let partial = root.join("report.zip.partial");
+        std::fs::write(&destination, b"previous report").unwrap();
+        let checks = std::cell::Cell::new(0);
+        let owned = AtomicBool::new(false);
+        let result = super::create_zip_checked(&source, &partial, &owned, || {
+            checks.set(checks.get() + 1);
+            if checks.get() >= 4 {
+                Err("cancelled".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result.unwrap_err(), "cancelled");
+        assert!(owned.load(Ordering::Acquire));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous report");
+        assert!(source.join("logcat.txt").exists());
+        let not_owned = AtomicBool::new(false);
+        assert!(super::create_zip_checked(&source, &destination, &not_owned, || Ok(())).is_err());
+        assert!(!not_owned.load(Ordering::Acquire));
+        std::fs::remove_file(source.join("logcat.txt")).unwrap();
+        std::fs::remove_dir(source).unwrap();
+        std::fs::remove_file(destination).unwrap();
+        std::fs::remove_file(partial).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }

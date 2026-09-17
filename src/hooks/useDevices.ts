@@ -56,8 +56,9 @@ export function useDevices() {
         }
       }
       setDevices(list);
+      const readyCount = list.filter((device) => device.status === "device").length;
       updateTrayMenu(
-        list.length > 0 ? `已连接 ${list.length} 台设备` : "未连接设备",
+        readyCount > 0 ? `已连接 ${readyCount} 台设备` : "未连接设备",
       ).catch(() => {});
       const selectedDevice = useDeviceStore.getState().currentDevice;
       const found = selectedDevice
@@ -76,7 +77,11 @@ export function useDevices() {
         if (nextDevice?.id !== selectedDevice?.id) {
           setCurrentDevice(nextDevice);
           if (nextDevice) {
-            const label = nextDevice.connectionType === "usb" ? "USB设备" : "模拟器";
+            const label = nextDevice.connectionType === "usb"
+              ? "USB设备"
+              : nextDevice.connectionType === "emulator"
+                ? "模拟器"
+                : "无线设备";
             setStatusText(`已自动选择${label}：${nextDevice.model || nextDevice.id}`);
           }
         } else if (nextDevice && found && selectedDevice && (
@@ -87,7 +92,7 @@ export function useDevices() {
           setCurrentDevice(found);
         }
       } else if (selectedDevice) {
-        if (!found) setCurrentDevice(null);
+        if (!found || found.status !== "device") setCurrentDevice(null);
         else if (
           found.status !== selectedDevice.status ||
           found.model !== selectedDevice.model ||
@@ -95,7 +100,10 @@ export function useDevices() {
         ) setCurrentDevice(found);
       }
     } catch (err) {
-      console.error("Failed to refresh devices:", err);
+      const message = `刷新设备失败: ${err}`;
+      console.error(message);
+      setStatusText(message);
+      setAutoConnectStatus(message);
     } finally {
       setIsRefreshing(false);
       inFlightRef.current = false;

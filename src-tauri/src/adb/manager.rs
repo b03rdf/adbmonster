@@ -3,6 +3,9 @@ use super::process;
 use crate::error::{AdbError, AdbResult};
 use crate::types::{Device, RemoteFile};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const SHORT_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn find_adb() -> AdbResult<std::path::PathBuf> {
     if let Ok(path) = which::which("adb") {
@@ -38,30 +41,61 @@ pub fn find_adb() -> AdbResult<std::path::PathBuf> {
 }
 
 pub async fn list_devices() -> AdbResult<Vec<Device>> {
-    let output = process::run_adb_command(&["devices", "-l"]).await?;
-    Ok(parser::parse_devices_output(&output))
+    let output =
+        process::run_adb_command_with_timeout(&["devices", "-l"], SHORT_COMMAND_TIMEOUT).await?;
+    let mut devices = parser::parse_devices_output(&output);
+    for device in devices
+        .iter_mut()
+        .filter(|device| device.status == "device")
+    {
+        device.android_version = process::run_shell_command_with_timeout(
+            &device.id,
+            &["getprop", "ro.build.version.release"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_or_default();
+    }
+    Ok(devices)
 }
 
 pub async fn get_device_ip(device_id: &str) -> AdbResult<String> {
-    let output = process::run_shell_command(device_id, &["ip", "addr", "show"]).await?;
-    Ok(parser::parse_ip_output(&output))
+    let output = process::run_shell_command_with_timeout(
+        device_id,
+        &["ip", "-f", "inet", "addr", "show", "wlan0"],
+        SHORT_COMMAND_TIMEOUT,
+    )
+    .await?;
+    let ip = parser::parse_ip_output(&output);
+    if ip.is_empty() {
+        Err(AdbError::new("Wi-Fi IPv4 address was not found on wlan0"))
+    } else {
+        Ok(ip)
+    }
 }
 
 pub async fn connect_device(ip: &str) -> AdbResult<String> {
-    process::run_adb_command(&["connect", ip]).await
+    process::run_adb_command_with_timeout(&["connect", ip], SHORT_COMMAND_TIMEOUT).await
 }
 
 pub async fn disconnect_device(ip: &str) -> AdbResult<String> {
-    process::run_adb_command(&["disconnect", ip]).await
+    process::run_adb_command_with_timeout(&["disconnect", ip], SHORT_COMMAND_TIMEOUT).await
 }
 
-pub async fn tcpip(port: u16) -> AdbResult<String> {
-    process::run_adb_command(&["tcpip", &port.to_string()]).await
+pub async fn tcpip(device_id: &str, port: u16) -> AdbResult<String> {
+    process::run_adb_command_with_timeout(
+        &["-s", device_id, "tcpip", &port.to_string()],
+        SHORT_COMMAND_TIMEOUT,
+    )
+    .await
 }
 
 pub async fn pair_device(ip: &str, port: u16, code: &str) -> AdbResult<String> {
-    let addr = format!("{}:{}", ip, port);
-    process::run_adb_command(&["pair", &addr, code]).await
+    let addr = match ip.parse::<std::net::IpAddr>() {
+        Ok(address) => std::net::SocketAddr::new(address, port).to_string(),
+        Err(_) => return Err(AdbError::new("Invalid device IP address")),
+    };
+    process::run_adb_command_with_timeout(&["pair", &addr, code], Duration::from_secs(30)).await
 }
 
 pub async fn install_apk(device_id: &str, apk_path: &str) -> AdbResult<String> {
@@ -125,17 +159,31 @@ fn is_install_failure(output: &str) -> bool {
 
 pub async fn uninstall_apk(device_id: &str, package_name: &str) -> AdbResult<String> {
     validate_package_name(package_name)?;
-    process::run_adb_command(&["-s", device_id, "uninstall", package_name]).await
+    process::run_adb_command_with_timeout(
+        &["-s", device_id, "uninstall", package_name],
+        Duration::from_secs(60),
+    )
+    .await
 }
 
 pub async fn clear_app(device_id: &str, package_name: &str) -> AdbResult<String> {
     validate_package_name(package_name)?;
-    process::run_shell_command(device_id, &["pm", "clear", package_name]).await
+    process::run_shell_command_with_timeout(
+        device_id,
+        &["pm", "clear", package_name],
+        Duration::from_secs(30),
+    )
+    .await
 }
 
 pub async fn get_package_info(device_id: &str, package_name: &str) -> AdbResult<String> {
     validate_package_name(package_name)?;
-    process::run_shell_command(device_id, &["dumpsys", "package", package_name]).await
+    process::run_shell_command_with_timeout(
+        device_id,
+        &["dumpsys", "package", package_name],
+        Duration::from_secs(30),
+    )
+    .await
 }
 
 pub async fn take_screenshot(device_id: &str) -> AdbResult<Vec<u8>> {
@@ -204,7 +252,12 @@ pub async fn pull_apk(device_id: &str, package_name: &str, local_path: &str) -> 
 }
 
 pub async fn list_third_party_packages(device_id: &str) -> AdbResult<Vec<String>> {
-    let output = process::run_shell_command(device_id, &["pm", "list", "packages", "-3"]).await?;
+    let output = process::run_shell_command_with_timeout(
+        device_id,
+        &["pm", "list", "packages", "-3"],
+        Duration::from_secs(30),
+    )
+    .await?;
     let mut packages = Vec::new();
     for line in output.lines() {
         let trimmed = line.trim();
@@ -237,9 +290,10 @@ pub(crate) fn validate_package_name(package_name: &str) -> AdbResult<()> {
 }
 
 pub async fn list_remote_files(device_id: &str, path: &str) -> AdbResult<Vec<RemoteFile>> {
-    let output = process::run_shell_raw(
+    let output = process::run_shell_raw_with_timeout(
         device_id,
         &format!("ls -la '{}'", path.replace('\'', "'\"'\"'")),
+        Duration::from_secs(30),
     )
     .await?;
     let base = path.trim_end_matches('/');

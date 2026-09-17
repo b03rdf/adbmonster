@@ -12,7 +12,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { pairDevice, connectDevice } from "@/lib/tauri";
+import { pairThenConnect } from "@/lib/tauri";
 import { useAppStore } from "@/stores/appStore";
 import { QrCode, Check, Loader2 } from "lucide-react";
 
@@ -28,12 +28,20 @@ export function QrPairingDialog() {
 
   const handlePair = async () => {
     if (!ip || !code) return;
+    const parsedPairPort = Number(pairPort);
+    const parsedConnectPort = Number(connectPort);
+    if (
+      !Number.isInteger(parsedPairPort) || parsedPairPort < 1 || parsedPairPort > 65_535 ||
+      !Number.isInteger(parsedConnectPort) || parsedConnectPort < 1 || parsedConnectPort > 65_535
+    ) {
+      setStatusText("配对失败: 端口必须在 1 到 65535 之间");
+      return;
+    }
     setPaired(false);
     setPairing(true);
     try {
-      const pairResult = await pairDevice(ip, parseInt(pairPort), code);
-      const connectResult = await connectDevice(`${ip}:${connectPort}`);
-      setStatusText(`配对成功: ${pairResult}; ${connectResult}`);
+      const result = await pairThenConnect(ip.trim(), parsedPairPort, parsedConnectPort, code);
+      setStatusText(`配对成功: ${result}`);
       setPaired(true);
     } catch (err) {
       setStatusText(`配对失败: ${err}`);

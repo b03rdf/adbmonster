@@ -1,15 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Network, Play, RefreshCw, RotateCcw, ShieldAlert, Square } from "lucide-react";
+import {
+  Download,
+  KeyRound,
+  Network,
+  Play,
+  RefreshCw,
+  ShieldAlert,
+  Square,
+} from "lucide-react";
 
 import {
   applyWeakNetwork,
+  authorizeWeakNetworkHelper,
   detectWeakNetworkCapabilities,
-  forceRestoreWeakNetwork,
   getWeakNetworkStatus,
+  installWeakNetworkHelper,
+  listPackages,
   stopWeakNetwork,
 } from "@/lib/tauri";
 import { useAppStore } from "@/stores/appStore";
+import { reconcileWeakNetworkStatus } from "@/lib/weakNetworkState";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type {
   WeakNetworkCapabilities,
@@ -29,9 +40,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type PresetKey = "mild" | "3g" | "severe" | "custom";
+const WeakNetworkScenarios = lazy(() => import("./WeakNetworkScenarios").then(module => ({ default: module.WeakNetworkScenarios })));
 
-const PRESETS: Record<Exclude<PresetKey, "custom">, WeakNetworkConfig> = {
+type PresetKey = "mild" | "3g" | "severe" | "custom";
+type NetworkProfile = Omit<WeakNetworkConfig, "targetPackage">;
+
+const PRESETS: Record<Exclude<PresetKey, "custom">, NetworkProfile> = {
   mild: {
     uploadKbps: 3_000,
     downloadKbps: 10_000,
@@ -67,10 +81,9 @@ const PRESETS: Record<Exclude<PresetKey, "custom">, WeakNetworkConfig> = {
 const EMPTY_STATUS: WeakNetworkStatus = {
   active: false,
   deviceId: null,
-  mode: null,
-  interfaceName: null,
+  targetPackage: null,
   expiresAt: null,
-  message: "当前未启用弱网",
+  message: "当前未启用 VPN 弱网",
 };
 
 function NumericField({
@@ -106,7 +119,11 @@ function NumericField({
         max={max}
         step={step}
         disabled={disabled}
-        onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
+        onChange={(event) => {
+          const parsed = Number(event.target.value);
+          const normalized = Number.isFinite(parsed) ? parsed : min;
+          onChange(Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min, normalized)));
+        }}
       />
     </div>
   );
@@ -121,11 +138,20 @@ function formatRemaining(expiresAt: string | null, now: number) {
     .padStart(2, "0")}`;
 }
 
+function delay(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
 export function WeakNetworkPanel() {
   const currentDevice = useDeviceStore((state) => state.currentDevice);
   const setStatusText = useAppStore((state) => state.setStatusText);
+  const deviceId = currentDevice?.id;
   const [preset, setPreset] = useState<PresetKey>("3g");
-  const [config, setConfig] = useState<WeakNetworkConfig>({ ...PRESETS["3g"] });
+  const [config, setConfig] = useState<WeakNetworkConfig>({
+    targetPackage: "",
+    ...PRESETS["3g"],
+  });
+  const [packages, setPackages] = useState<string[]>([]);
   const [capabilities, setCapabilities] = useState<WeakNetworkCapabilities | null>(null);
   const [status, setStatus] = useState<WeakNetworkStatus>(EMPTY_STATUS);
   const [detecting, setDetecting] = useState(false);
@@ -134,36 +160,51 @@ export function WeakNetworkPanel() {
   const [now, setNow] = useState(Date.now());
 
   const detect = useCallback(async () => {
-    if (!currentDevice) {
+    if (!deviceId) {
       setCapabilities(null);
-      return;
+      return null;
     }
     setDetecting(true);
     setError(null);
     try {
-      const nextCapabilities = await detectWeakNetworkCapabilities(currentDevice.id);
-      setCapabilities(nextCapabilities);
+      const [next, nextStatus] = await Promise.all([
+        detectWeakNetworkCapabilities(deviceId),
+        getWeakNetworkStatus(deviceId),
+      ]);
+      setCapabilities(reconcileWeakNetworkStatus(next, nextStatus, deviceId));
+      setStatus(nextStatus);
+      return next;
     } catch (reason) {
       setCapabilities(null);
       setError(`能力检测失败：${reason}`);
+      return null;
     } finally {
       setDetecting(false);
     }
-  }, [currentDevice]);
+  }, [deviceId]);
 
   useEffect(() => {
     let cancelled = false;
     setCapabilities(null);
-    if (!currentDevice) return;
+    setPackages([]);
+    setStatus(EMPTY_STATUS);
+    if (!deviceId) return;
 
     setDetecting(true);
     setError(null);
-    detectWeakNetworkCapabilities(currentDevice.id)
-      .then((nextCapabilities) => {
-        if (!cancelled) setCapabilities(nextCapabilities);
+    Promise.all([
+      detectWeakNetworkCapabilities(deviceId),
+      getWeakNetworkStatus(deviceId),
+      listPackages(deviceId),
+    ])
+      .then(([nextCapabilities, nextStatus, nextPackages]) => {
+        if (cancelled) return;
+        setCapabilities(reconcileWeakNetworkStatus(nextCapabilities, nextStatus, deviceId));
+        setStatus(nextStatus);
+        setPackages(nextPackages);
       })
       .catch((reason) => {
-        if (!cancelled) setError(`能力检测失败：${reason}`);
+        if (!cancelled) setError(`弱网状态初始化失败：${reason}`);
       })
       .finally(() => {
         if (!cancelled) setDetecting(false);
@@ -172,30 +213,25 @@ export function WeakNetworkPanel() {
     return () => {
       cancelled = true;
     };
-  }, [currentDevice]);
+  }, [deviceId]);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
-    Promise.all([
-      getWeakNetworkStatus().then((nextStatus) => {
-        if (!cancelled) setStatus(nextStatus);
-      }),
-      listen<WeakNetworkStatus>("weak-network:status", (event) => {
-        setStatus(event.payload);
-        setStatusText(event.payload.message);
-      }).then((stopListening) => {
-        if (cancelled) stopListening();
-        else unlisten = stopListening;
-      }),
-    ]).catch((reason) => {
-      if (!cancelled) setError(`弱网状态初始化失败：${reason}`);
+    listen<WeakNetworkStatus>("weak-network:status", (event) => {
+      if (cancelled) return;
+      setStatus(event.payload);
+      setCapabilities((current) => reconcileWeakNetworkStatus(current, event.payload, deviceId));
+      setStatusText(event.payload.message);
+    }).then((stopListening) => {
+      if (cancelled) stopListening();
+      else unlisten = stopListening;
     });
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [setStatusText]);
+  }, [deviceId, setStatusText]);
 
   useEffect(() => {
     if (!status.active) return;
@@ -207,40 +243,80 @@ export function WeakNetworkPanel() {
   const modeLabel = useMemo(() => {
     if (detecting) return "检测中";
     if (!capabilities) return "未检测";
-    if (capabilities.mode === "android_emulator") return "Android 模拟器";
-    if (capabilities.mode === "root_netem") return "Root NetEm";
-    return "不支持";
-  }, [capabilities, detecting]);
+    if (!capabilities.helperInstalled) return "未安装";
+    if (capabilities.helperUpdateRequired) return "需更新";
+    if (!capabilities.vpnAuthorized) return "需授权";
+    if (status.active && status.deviceId === deviceId) return "运行中";
+    return "VPN 就绪";
+  }, [capabilities, detecting, status, deviceId]);
 
   const updateConfig = <Key extends keyof WeakNetworkConfig>(
     key: Key,
     value: WeakNetworkConfig[Key],
   ) => {
-    setPreset("custom");
+    if (key !== "targetPackage") setPreset("custom");
     setConfig((current) => ({ ...current, [key]: value }));
   };
 
   const selectPreset = (value: PresetKey) => {
     setPreset(value);
-    if (value !== "custom") setConfig({ ...PRESETS[value] });
+    if (value !== "custom") {
+      setConfig((current) => ({ targetPackage: current.targetPackage, ...PRESETS[value] }));
+    }
   };
 
-  const apply = async () => {
-    if (!currentDevice || !capabilities?.supported) return;
+  const installHelper = async () => {
+    if (!deviceId) return;
     setBusy(true);
     setError(null);
     try {
-      const effectiveConfig = capabilities.supportsPacketEffects
-        ? config
-        : {
-            ...config,
-            lossPercent: 0,
-            duplicatePercent: 0,
-            reorderPercent: 0,
-          };
-      const nextStatus = await applyWeakNetwork(currentDevice.id, effectiveConfig);
-      setStatus(nextStatus);
-      setStatusText(nextStatus.message);
+      const next = await installWeakNetworkHelper(deviceId);
+      setCapabilities(next);
+      setStatusText("VPN 弱网助手安装成功，请继续授权");
+    } catch (reason) {
+      const message = `安装弱网助手失败：${reason}`;
+      setError(message);
+      setStatusText(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const authorizeHelper = async () => {
+    if (!deviceId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const message = await authorizeWeakNetworkHelper(deviceId);
+      setStatusText(message);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await delay(500);
+        const next = await detectWeakNetworkCapabilities(deviceId);
+        setCapabilities(next);
+        if (next.vpnAuthorized) {
+          setStatusText("VPN 授权成功，可以开始弱网测试");
+          return;
+        }
+      }
+      setError("未检测到 VPN 授权，请确认设备上的系统弹窗");
+    } catch (reason) {
+      const message = `VPN 授权失败：${reason}`;
+      setError(message);
+      setStatusText(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    if (!deviceId || !capabilities?.supported || !config.targetPackage) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await applyWeakNetwork(deviceId, config);
+      setStatus(next);
+      setStatusText(next.message);
+      await detect();
     } catch (reason) {
       const message = `应用弱网失败：${reason}`;
       setError(message);
@@ -251,32 +327,16 @@ export function WeakNetworkPanel() {
   };
 
   const stop = async () => {
+    if (!deviceId) return;
     setBusy(true);
     setError(null);
     try {
-      const nextStatus = await stopWeakNetwork();
-      setStatus(nextStatus);
-      setStatusText(nextStatus.message);
-    } catch (reason) {
-      const message = `恢复网络失败：${reason}`;
-      setError(message);
-      setStatusText(message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const forceRestore = async () => {
-    if (!currentDevice) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const nextStatus = await forceRestoreWeakNetwork(currentDevice.id);
-      setStatus(nextStatus);
-      setStatusText(nextStatus.message);
+      const next = await stopWeakNetwork(deviceId);
+      setStatus(next);
+      setStatusText(next.message);
       await detect();
     } catch (reason) {
-      const message = `强制恢复失败：${reason}`;
+      const message = `恢复网络失败：${reason}`;
       setError(message);
       setStatusText(message);
     } finally {
@@ -288,13 +348,19 @@ export function WeakNetworkPanel() {
     return (
       <Card className="p-3 text-center text-xs text-muted-foreground">
         <Network className="h-5 w-5 mx-auto mb-1.5 opacity-50" />
-        选择设备后可配置弱网测试
+        选择设备后可配置非 Root VPN 弱网
       </Card>
     );
   }
 
-  const activeOnCurrentDevice = status.active && status.deviceId === currentDevice.id;
-  const packetEffectsDisabled = !capabilities?.supportsPacketEffects || busy;
+  const activeOnCurrentDevice = status.active && status.deviceId === deviceId;
+  const setupRequired =
+    !capabilities?.helperInstalled || capabilities.helperUpdateRequired;
+  const authorizationRequired =
+    capabilities?.helperInstalled &&
+    !capabilities.helperUpdateRequired &&
+    !capabilities.vpnAuthorized;
+  const controlsDisabled = !capabilities?.supported || busy;
 
   return (
     <Card className="p-2.5 space-y-2.5">
@@ -305,7 +371,7 @@ export function WeakNetworkPanel() {
             手游弱网测试
           </div>
           <div className="text-[9px] text-muted-foreground mt-0.5">
-            带宽、延迟、抖动与丢包模拟
+            非 Root · 仅代理指定应用
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -321,7 +387,7 @@ export function WeakNetworkPanel() {
             className="h-6 w-6 p-0"
             onClick={detect}
             disabled={detecting || busy}
-            title="重新检测弱网能力"
+            title="重新检测弱网助手状态"
           >
             <RefreshCw className={`h-3 w-3 ${detecting ? "animate-spin" : ""}`} />
           </Button>
@@ -330,22 +396,66 @@ export function WeakNetworkPanel() {
 
       {capabilities && (
         <div className="rounded border bg-muted/20 p-2 text-[9px] text-muted-foreground leading-relaxed">
-          {capabilities.message}
-          {capabilities.interfaceName && (
-            <span className="ml-1 font-mono">接口：{capabilities.interfaceName}</span>
+          <div>{capabilities.message}</div>
+          {capabilities.helperVersion && (
+            <div className="mt-0.5 font-mono">助手版本：{capabilities.helperVersion}</div>
           )}
         </div>
       )}
 
-      {currentDevice.connectionType === "network" && (
-        <div className="flex gap-1.5 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[9px] text-amber-600 dark:text-amber-400">
-          <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
-          弱网可能让无线 ADB 断开，建议使用 USB 调试。
-        </div>
+      {capabilities && setupRequired && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full text-xs"
+          onClick={installHelper}
+          disabled={busy || detecting}
+        >
+          {busy ? (
+            <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5 mr-1" />
+          )}
+          {capabilities.helperUpdateRequired ? "更新 VPN 弱网助手" : "安装 VPN 弱网助手"}
+        </Button>
       )}
 
+      {authorizationRequired && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full text-xs"
+          onClick={authorizeHelper}
+          disabled={busy || detecting}
+        >
+          {busy ? (
+            <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <KeyRound className="h-3.5 w-3.5 mr-1" />
+          )}
+          在设备上授权 VPN
+        </Button>
+      )}
+
+      <div className="space-y-1">
+        <Label className="text-[10px] text-muted-foreground">目标应用包名</Label>
+        <Input
+          list="weak-network-packages"
+          className="h-7 px-2 font-mono text-xs"
+          value={config.targetPackage}
+          placeholder="com.example.game"
+          disabled={controlsDisabled}
+          onChange={(event) => updateConfig("targetPackage", event.target.value.trim())}
+        />
+        <datalist id="weak-network-packages">
+          {packages.map((packageName) => (
+            <option value={packageName} key={packageName} />
+          ))}
+        </datalist>
+      </div>
+
       <Select value={preset} onValueChange={(value) => selectPreset(value as PresetKey)}>
-        <SelectTrigger className="h-7 text-xs px-2" disabled={!capabilities?.supported || busy}>
+        <SelectTrigger className="h-7 text-xs px-2" disabled={controlsDisabled}>
           <SelectValue placeholder="选择弱网预设" />
         </SelectTrigger>
         <SelectContent>
@@ -362,7 +472,7 @@ export function WeakNetworkPanel() {
           unit="Kbps"
           value={config.downloadKbps}
           max={1_000_000}
-          disabled={!capabilities?.supportsDownlink || busy}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("downloadKbps", value)}
         />
         <NumericField
@@ -370,7 +480,7 @@ export function WeakNetworkPanel() {
           unit="Kbps"
           value={config.uploadKbps}
           max={1_000_000}
-          disabled={!capabilities?.supportsBandwidth || busy}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("uploadKbps", value)}
         />
         <NumericField
@@ -378,7 +488,7 @@ export function WeakNetworkPanel() {
           unit="ms"
           value={config.latencyMs}
           max={5_000}
-          disabled={!capabilities?.supported || busy}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("latencyMs", value)}
         />
         <NumericField
@@ -386,7 +496,7 @@ export function WeakNetworkPanel() {
           unit="ms"
           value={config.jitterMs}
           max={5_000}
-          disabled={!capabilities?.supported || busy}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("jitterMs", value)}
         />
         <NumericField
@@ -395,7 +505,7 @@ export function WeakNetworkPanel() {
           value={config.lossPercent}
           max={100}
           step={0.1}
-          disabled={packetEffectsDisabled}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("lossPercent", value)}
         />
         <NumericField
@@ -404,7 +514,7 @@ export function WeakNetworkPanel() {
           value={config.duplicatePercent}
           max={100}
           step={0.1}
-          disabled={packetEffectsDisabled}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("duplicatePercent", value)}
         />
         <NumericField
@@ -413,7 +523,7 @@ export function WeakNetworkPanel() {
           value={config.reorderPercent}
           max={100}
           step={0.1}
-          disabled={packetEffectsDisabled}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("reorderPercent", value)}
         />
         <NumericField
@@ -422,34 +532,34 @@ export function WeakNetworkPanel() {
           value={config.durationSeconds}
           min={10}
           max={3_600}
-          disabled={!capabilities?.supported || busy}
+          disabled={controlsDisabled}
           onChange={(value) => updateConfig("durationSeconds", value)}
         />
       </div>
 
-      {capabilities?.mode === "android_emulator" && (
-        <div className="text-[9px] text-muted-foreground">
-          官方模拟器控制台不支持丢包、重复包和乱序，因此这些参数已停用。
-        </div>
-      )}
-      {capabilities?.mode === "root_netem" && (
-        <div className="text-[9px] text-muted-foreground">
-          Root NetEm 当前只限制设备出口（上行）；下行限速需 VPN/IFB，暂不生效。
-        </div>
-      )}
+      <div className="flex gap-1.5 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[9px] text-amber-600 dark:text-amber-400">
+        <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+        <span>
+          只有所选应用经过 VPN。带宽、延迟和抖动对 TCP/UDP 生效；丢包、重复包和乱序仅对 UDP 生效。
+          Android 同时只能启用一个 VPN，测试前请先关闭设备上的其他 VPN。
+        </span>
+      </div>
 
       {status.active && (
         <div className="flex items-center justify-between gap-2 rounded border border-primary/30 bg-primary/5 p-2">
           <div className="min-w-0">
             <div className="text-[10px] font-medium text-primary">
-              {activeOnCurrentDevice ? "弱网运行中" : "其他设备正在弱网测试"}
+              {activeOnCurrentDevice ? "VPN 弱网运行中" : "其他设备正在弱网测试"}
             </div>
-            <div className="text-[9px] text-muted-foreground truncate" title={status.deviceId ?? ""}>
-              {status.deviceId ?? "--"}
+            <div
+              className="text-[9px] text-muted-foreground truncate font-mono"
+              title={status.targetPackage ?? capabilities?.activeTargetPackage ?? ""}
+            >
+              {status.targetPackage ?? capabilities?.activeTargetPackage ?? "--"}
             </div>
           </div>
           <div className="font-mono text-xs font-semibold tabular-nums">
-            {formatRemaining(status.expiresAt, now)}
+            {formatRemaining(status.expiresAt ?? capabilities?.expiresAt ?? null, now)}
           </div>
         </div>
       )}
@@ -465,7 +575,7 @@ export function WeakNetworkPanel() {
           size="sm"
           className="h-8 text-xs"
           onClick={apply}
-          disabled={!capabilities?.supported || busy}
+          disabled={controlsDisabled || !config.targetPackage || setupRequired || authorizationRequired}
         >
           {busy ? (
             <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
@@ -479,24 +589,25 @@ export function WeakNetworkPanel() {
           size="sm"
           className="h-8 text-xs"
           onClick={stop}
-          disabled={!status.active || busy}
+          disabled={!activeOnCurrentDevice || busy}
         >
           <Square className="h-3.5 w-3.5 mr-1" />
           停止并恢复
         </Button>
       </div>
-
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 w-full text-[10px]"
-        onClick={forceRestore}
-        disabled={busy}
-        title="应用重启或状态异常时，重新探测并清理当前设备的弱网规则"
-      >
-        <RotateCcw className="h-3 w-3 mr-1" />
-        强制恢复当前设备网络
-      </Button>
+      <Suspense fallback={<div className="text-xs text-muted-foreground">加载场景与观测面板…</div>}>
+      <WeakNetworkScenarios
+        key={currentDevice.id}
+        deviceId={currentDevice.id}
+        currentConfig={config}
+        ready={Boolean(capabilities?.supported)}
+        busy={busy}
+        setBusy={setBusy}
+        active={activeOnCurrentDevice}
+        onStop={stop}
+        onStatus={(next) => { setStatus(next); setStatusText(next.message); }}
+      />
+      </Suspense>
     </Card>
   );
 }

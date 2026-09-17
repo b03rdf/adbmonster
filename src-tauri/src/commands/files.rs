@@ -4,6 +4,7 @@ use crate::types::RemoteFile;
 
 #[tauri::command]
 pub async fn list_remote_files(device_id: String, path: String) -> Result<Vec<RemoteFile>, String> {
+    validate_remote_path(&path, false)?;
     manager::list_remote_files(&device_id, &path)
         .await
         .map_err(|e| e.message)
@@ -15,6 +16,7 @@ pub async fn push_file_to_remote(
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
+    validate_remote_path(&remote_path, false)?;
     manager::push_file(&device_id, &local_path, &remote_path)
         .await
         .map_err(|e| e.message)
@@ -44,9 +46,13 @@ pub async fn create_remote_directory(
     Ok(remote_path)
 }
 
-fn validate_remote_path(path: &str, destructive: bool) -> Result<(), String> {
+pub(crate) fn validate_remote_path(path: &str, destructive: bool) -> Result<(), String> {
     if path.is_empty() || !path.starts_with('/') || path.contains('\0') {
         return Err("Remote path must be a non-empty absolute path".to_string());
+    }
+
+    if path.contains("//") {
+        return Err("Remote path must not contain repeated '/' separators".to_string());
     }
 
     if path.split('/').any(|segment| matches!(segment, "." | "..")) {
@@ -54,24 +60,37 @@ fn validate_remote_path(path: &str, destructive: bool) -> Result<(), String> {
     }
 
     let normalized = path.trim_end_matches('/');
-    if destructive
-        && matches!(
-            normalized,
-            "" | "/sdcard"
-                | "/storage"
-                | "/data"
-                | "/system"
-                | "/vendor"
-                | "/product"
-                | "/proc"
-                | "/sys"
-                | "/dev"
-        )
-    {
+    if destructive && is_protected_delete_path(normalized) {
         return Err(format!("Refusing to delete protected path: {path}"));
     }
 
     Ok(())
+}
+
+fn is_protected_delete_path(path: &str) -> bool {
+    matches!(
+        path,
+        "" | "/sdcard"
+            | "/storage"
+            | "/storage/emulated"
+            | "/storage/emulated/0"
+            | "/storage/self"
+            | "/storage/self/primary"
+            | "/mnt"
+            | "/mnt/sdcard"
+            | "/data"
+            | "/system"
+            | "/vendor"
+            | "/product"
+            | "/proc"
+            | "/sys"
+            | "/dev"
+    ) || path
+        .strip_prefix("/storage/")
+        .is_some_and(|rest| !rest.contains('/'))
+        || path
+            .strip_prefix("/mnt/")
+            .is_some_and(|rest| !rest.contains('/'))
 }
 
 fn shlex_quote(s: &str) -> String {
@@ -96,12 +115,26 @@ mod tests {
 
     #[test]
     fn rejects_dangerous_delete_paths() {
-        for path in ["", "/", "/sdcard", "/sdcard/", "/storage", "/data"] {
+        for path in [
+            "",
+            "/",
+            "/sdcard",
+            "/sdcard/",
+            "/storage",
+            "/storage/emulated",
+            "/storage/emulated/0",
+            "/storage/ABCD-1234",
+            "/mnt/sdcard",
+            "/data",
+        ] {
             assert!(validate_remote_path(path, true).is_err(), "{path}");
         }
         assert!(validate_remote_path("relative/path", true).is_err());
+        assert!(validate_remote_path("//sdcard", true).is_err());
+        assert!(validate_remote_path("/sdcard//Download", true).is_err());
         assert!(validate_remote_path("/sdcard/..", true).is_err());
         assert!(validate_remote_path("/sdcard/./Download", true).is_err());
         assert!(validate_remote_path("/sdcard/Download/file.txt", true).is_ok());
+        assert!(validate_remote_path("/storage/ABCD-1234/Download", true).is_ok());
     }
 }

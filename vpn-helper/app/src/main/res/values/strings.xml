@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ADB Monster 弱网助手</string>
+    <string name="vpn_channel">弱网测试</string>
+    <string name="vpn_running">正在为 %1$s 模拟弱网</string>
+    <string name="permission_hint">请允许 ADB Monster 创建本地 VPN。VPN 只接管所选应用的流量，不会解密或上传内容。</string>
+</resources>

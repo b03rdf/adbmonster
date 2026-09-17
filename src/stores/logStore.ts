@@ -17,6 +17,18 @@ interface LogState {
   clearLogs: () => void;
 }
 
+function countLogEvents(lines: string[]) {
+  let errorCount = 0;
+  let crashCount = 0;
+  let anrCount = 0;
+  for (const line of lines) {
+    if (/\s[EF]\s+[^:]+:|^[EF]\//.test(line)) errorCount += 1;
+    if (line.includes("FATAL EXCEPTION") || line.includes("Fatal signal")) crashCount += 1;
+    if (line.includes("ANR in ")) anrCount += 1;
+  }
+  return { errorCount, crashCount, anrCount };
+}
+
 export const useLogStore = create<LogState>((set) => ({
   lines: [],
   isRunning: false,
@@ -30,25 +42,18 @@ export const useLogStore = create<LogState>((set) => ({
     set((state) => {
       if (lines.length === 0) return state;
       const nextLines = [...state.lines, ...lines];
-      let errorCount = state.errorCount;
-      let crashCount = state.crashCount;
-      let anrCount = state.anrCount;
-      for (const line of lines) {
-        if (/\s[EF]\s+[^:]+:|^[EF]\//.test(line)) errorCount += 1;
-        if (line.includes("FATAL EXCEPTION") || line.includes("Fatal signal")) crashCount += 1;
-        if (line.includes("ANR in ")) anrCount += 1;
-      }
+      const retainedLines = nextLines.length > state.maxLines
+        ? nextLines.slice(-state.maxLines)
+        : nextLines;
       return {
-        lines:
-          nextLines.length > state.maxLines
-            ? nextLines.slice(-state.maxLines)
-            : nextLines,
-        errorCount,
-        crashCount,
-        anrCount,
+        lines: retainedLines,
+        ...countLogEvents(retainedLines),
       };
     }),
-  setLines: (lines) => set({ lines }),
+  setLines: (lines) => set((state) => {
+    const retainedLines = lines.slice(-state.maxLines);
+    return { lines: retainedLines, ...countLogEvents(retainedLines) };
+  }),
   setIsRunning: (isRunning) => set({ isRunning }),
   setIsPaused: (isPaused) => set({ isPaused }),
   setFilterText: (filterText) => set({ filterText }),

@@ -5,5 +5,6 @@ pub mod files;
 pub mod logcat;
 pub mod media;
 pub mod network;
+pub mod network_profiles;
 pub mod scrcpy;
 pub mod tray;

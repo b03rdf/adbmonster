@@ -80,19 +80,31 @@ pub struct DiagnosticStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RecordingStatus {
+    pub task_id: Option<String>,
+    pub running: bool,
+    pub has_recording: bool,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WeakNetworkCapabilities {
-    pub mode: String,
     pub supported: bool,
-    pub interface_name: Option<String>,
-    pub supports_bandwidth: bool,
-    pub supports_downlink: bool,
-    pub supports_packet_effects: bool,
+    pub helper_installed: bool,
+    pub helper_update_required: bool,
+    pub vpn_authorized: bool,
+    pub helper_running: bool,
+    pub helper_version: Option<String>,
+    pub active_target_package: Option<String>,
+    pub expires_at: Option<String>,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WeakNetworkConfig {
+    pub target_package: String,
     pub upload_kbps: u32,
     pub download_kbps: u32,
     pub latency_ms: u32,
@@ -108,8 +120,7 @@ pub struct WeakNetworkConfig {
 pub struct WeakNetworkStatus {
     pub active: bool,
     pub device_id: Option<String>,
-    pub mode: Option<String>,
-    pub interface_name: Option<String>,
+    pub target_package: Option<String>,
     pub expires_at: Option<String>,
     pub message: String,
 }

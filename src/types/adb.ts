@@ -61,17 +61,27 @@ export interface DiagnosticStatus {
   progress: DiagnosticProgress | null;
 }
 
+export interface RecordingStatus {
+  taskId: string | null;
+  running: boolean;
+  hasRecording: boolean;
+  deviceId: string | null;
+}
+
 export interface WeakNetworkCapabilities {
-  mode: "android_emulator" | "root_netem" | "unsupported";
   supported: boolean;
-  interfaceName: string | null;
-  supportsBandwidth: boolean;
-  supportsDownlink: boolean;
-  supportsPacketEffects: boolean;
+  helperInstalled: boolean;
+  helperUpdateRequired: boolean;
+  vpnAuthorized: boolean;
+  helperRunning: boolean;
+  helperVersion: string | null;
+  activeTargetPackage: string | null;
+  expiresAt: string | null;
   message: string;
 }
 
 export interface WeakNetworkConfig {
+  targetPackage: string;
   uploadKbps: number;
   downloadKbps: number;
   latencyMs: number;
@@ -85,8 +95,7 @@ export interface WeakNetworkConfig {
 export interface WeakNetworkStatus {
   active: boolean;
   deviceId: string | null;
-  mode: string | null;
-  interfaceName: string | null;
+  targetPackage: string | null;
   expiresAt: string | null;
   message: string;
 }

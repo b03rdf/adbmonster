@@ -29,7 +29,7 @@ function statusColor(status: string) {
     case "unauthorized":
       return "bg-red-500/10 text-red-600 border-red-200 dark:border-red-800" as const;
     default:
-      return undefined;
+      return "bg-muted text-muted-foreground" as const;
   }
 }
 
@@ -63,7 +63,7 @@ export function DeviceSelector() {
   } = useDevices();
 
   const handleValueChange = (value: string) => {
-    const device = devices.find((d) => d.id === value) || null;
+    const device = devices.find((item) => item.id === value && item.status === "device") || null;
     setCurrentDevice(device);
   };
 
@@ -81,7 +81,11 @@ export function DeviceSelector() {
               </div>
             )}
             {devices.map((device) => (
-              <SelectItem key={device.id} value={device.id}>
+              <SelectItem
+                key={device.id}
+                value={device.id}
+                disabled={device.status !== "device"}
+              >
                 <span className="flex items-center gap-2">
                   {device.connectionType === "usb" ? (
                     <Cable className="h-3 w-3" />

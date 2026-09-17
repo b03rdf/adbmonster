@@ -22,11 +22,20 @@ import {
   Clipboard,
   Wifi,
   Gauge,
+  FolderOpen,
 } from "lucide-react";
 
 export function ToolPanel() {
   const currentDevice = useDeviceStore((s) => s.currentDevice);
-  const { isScreenshotting, isRecordingState, captureScreenshot, toggleRecord } = useMedia();
+  const {
+    isScreenshotting,
+    isRecordingState,
+    isRecordingActive,
+    recordingDeviceId,
+    captureScreenshot,
+    toggleRecord,
+    releaseRecordingState,
+  } = useMedia();
   const { isInstalling, install, uninstall, clear, getInfo, exportClog, getIp, extractApk } = useApk();
 
   const [packageName, setPackageName] = useState("");
@@ -44,6 +53,26 @@ export function ToolPanel() {
     if (!packageName) return;
     const info = await getInfo(packageName);
     setPackageInfo(info);
+  };
+
+  const handleUninstall = async () => {
+    if (!packageName || !confirm(`确定卸载 ${packageName} 吗？`)) return;
+    await uninstall(packageName);
+  };
+
+  const handleClear = async () => {
+    if (!packageName || !confirm(`确定清除 ${packageName} 的全部应用数据吗？此操作不可撤销。`)) {
+      return;
+    }
+    await clear(packageName);
+  };
+
+  const handleClogDirSelect = async () => {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    });
+    if (selected) setClogDir(selected);
   };
 
   const handleCopyIp = () => {
@@ -95,13 +124,13 @@ export function ToolPanel() {
               variant={isRecordingState ? "destructive" : "outline"}
               size="sm"
               onClick={toggleRecord}
-              disabled={!currentDevice}
+              disabled={!currentDevice && !isRecordingState}
               className="h-16 flex-col gap-1"
             >
               {isRecordingState ? (
                 <>
                   <Square className="h-5 w-5" />
-                  <span className="text-[10px]">停止录屏</span>
+                  <span className="text-[10px]">{isRecordingActive ? "停止录屏" : "保存录屏"}</span>
                 </>
               ) : (
                 <>
@@ -114,8 +143,14 @@ export function ToolPanel() {
 
           {isRecordingState && (
             <p className="text-[10px] text-center text-destructive animate-pulse">
-              录制中...
+              {isRecordingActive ? "录制中..." : "录制已结束，等待保存"}
+              {recordingDeviceId && recordingDeviceId !== currentDevice?.id
+                ? `（设备 ${recordingDeviceId}）`
+                : ""}
             </p>
+          )}
+          {isRecordingState && !isRecordingActive && (
+            <Button variant="outline" size="sm" className="w-full text-xs" onClick={() => void releaseRecordingState()}>保留设备文件并释放录屏占用</Button>
           )}
         </TabsContent>
 
@@ -156,7 +191,7 @@ export function ToolPanel() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => uninstall(packageName)}
+                onClick={handleUninstall}
                 disabled={!currentDevice || !packageName}
                 className="h-7"
               >
@@ -169,7 +204,7 @@ export function ToolPanel() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => clear(packageName)}
+                onClick={handleClear}
                 disabled={!currentDevice || !packageName}
                 className="h-7 flex-1"
               >
@@ -243,13 +278,23 @@ export function ToolPanel() {
               className="h-7 text-xs w-28"
               placeholder="输出目录..."
               value={clogDir}
-              onChange={(e) => setClogDir(e.target.value)}
+              readOnly
             />
             <Button
               variant="outline"
               size="sm"
+              onClick={handleClogDirSelect}
+              disabled={!currentDevice}
+              className="h-7 px-2"
+              title="选择 CLog 输出目录"
+            >
+              <FolderOpen className="h-3 w-3" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => exportClog(packageName, clogDir)}
-              disabled={!currentDevice || !packageName}
+              disabled={!currentDevice || !packageName || !clogDir}
               className="h-7"
             >
               <Download className="h-3 w-3 mr-1" />

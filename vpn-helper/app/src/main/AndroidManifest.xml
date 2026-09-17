@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='utf-8'?>
+<manifest xmlns:android='http://schemas.android.com/apk/res/android'>
+    <uses-permission android:name='android.permission.INTERNET' />
+    <!-- Internal per-app VPN testing must resolve any user-selected package. -->
+    <uses-permission android:name='android.permission.QUERY_ALL_PACKAGES' />
+    <uses-permission android:name='android.permission.FOREGROUND_SERVICE' />
+    <uses-permission android:name='android.permission.FOREGROUND_SERVICE_SPECIAL_USE' />
+    <uses-permission android:name='android.permission.POST_NOTIFICATIONS' />
+
+    <application
+        android:allowBackup='false'
+        android:label='@string/app_name'
+        android:supportsRtl='true'
+        android:theme='@style/Theme.AdbMonsterVpn'
+        android:usesCleartextTraffic='false'>
+        <activity
+            android:name='.ControlActivity'
+            android:excludeFromRecents='true'
+            android:exported='true'
+            android:permission='android.permission.DUMP'
+            android:theme='@style/Theme.AdbMonsterVpn' />
+        <receiver
+            android:name='.StatusReceiver'
+            android:exported='true'
+            android:permission='android.permission.DUMP' />
+        <service
+            android:name='hev.sockstun.TProxyService'
+            android:exported='true'
+            android:foregroundServiceType='specialUse'
+            android:permission='android.permission.BIND_VPN_SERVICE'>
+            <intent-filter>
+                <action android:name='android.net.VpnService' />
+            </intent-filter>
+            <property
+                android:name='android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE'
+                android:value='Local per-app network testing VPN' />
+        </service>
+    </application>
+</manifest>

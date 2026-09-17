@@ -10,23 +10,44 @@ import {
 } from "@/components/ui/dialog";
 import { listPackages } from "@/lib/tauri";
 import { useDeviceStore } from "@/stores/deviceStore";
+import { useAppStore } from "@/stores/appStore";
 import { Package, Search, Loader2 } from "lucide-react";
 
 export function PackageList({ onSelect }: { onSelect: (pkg: string) => void }) {
   const currentDevice = useDeviceStore((s) => s.currentDevice);
+  const setStatusText = useAppStore((s) => s.setStatusText);
   const [open, setOpen] = useState(false);
   const [packages, setPackages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
-    if (open && currentDevice && packages.length === 0 && !loading) {
-      setLoading(true);
-      listPackages(currentDevice.id)
-        .then(setPackages)
-        .finally(() => setLoading(false));
-    }
-  }, [open, currentDevice]);
+    setPackages([]);
+    setFilter("");
+    setLoading(false);
+  }, [currentDevice?.id]);
+
+  useEffect(() => {
+    if (!open || !currentDevice || packages.length > 0 || loading) return;
+    let cancelled = false;
+    const requestDeviceId = currentDevice.id;
+    setLoading(true);
+    listPackages(currentDevice.id)
+      .then((nextPackages) => {
+        if (!cancelled) setPackages(nextPackages);
+      })
+      .catch((reason) => {
+        if (!cancelled) setStatusText(`应用列表加载失败: ${reason}`);
+      })
+      .finally(() => {
+        if (useDeviceStore.getState().currentDevice?.id === requestDeviceId) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, currentDevice?.id, packages.length, setStatusText]);
 
   const filtered = filter
     ? packages.filter((p) => p.toLowerCase().includes(filter.toLowerCase()))

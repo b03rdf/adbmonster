@@ -2,11 +2,16 @@
   "name": "adb-monster",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "check": "npm run build && npm run check:rust",
+    "check": "npm run build && npm run test:weak-network && npm run test:tasks && npm run check:rust",
+    "test:tasks": "node --test scripts/task-state.test.mjs",
+    "test:weak-network": "node --test scripts/weak-network-state.test.mjs scripts/network-scenario.test.mjs",
     "check:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
     "preview": "vite preview",
     "tauri": "tauri"

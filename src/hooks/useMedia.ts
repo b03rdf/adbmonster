@@ -1,11 +1,14 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useDeviceStore } from "@/stores/deviceStore";
 import { useAppStore } from "@/stores/appStore";
+import type { RecordingStatus } from "@/types/adb";
 import {
   takeScreenshot,
   startRecord,
   stopRecord,
+  getRecordingStatus,
+  releaseRecording,
   pullClog,
   installApk,
   uninstallApk,
@@ -17,9 +20,42 @@ import {
 
 export function useMedia() {
   const [isScreenshotting, setIsScreenshotting] = useState(false);
-  const [isRecordingState, setIsRecordingState] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
+    taskId: null,
+    running: false,
+    hasRecording: false,
+    deviceId: null,
+  });
   const currentDevice = useDeviceStore((s) => s.currentDevice);
   const { setStatusText, setScreenshotPath } = useAppStore();
+
+  const syncRecordingStatus = useCallback(async () => {
+    try {
+      setRecordingStatus(await getRecordingStatus());
+    } catch (err) {
+      setStatusText(`查询录屏状态失败: ${err}`);
+    }
+  }, [setStatusText]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sync = async () => {
+      try {
+        const next = await getRecordingStatus();
+        if (!cancelled) setRecordingStatus(next);
+      } catch (err) {
+        if (!cancelled) setStatusText(`查询录屏状态失败: ${err}`);
+      } finally {
+        if (!cancelled) timer = setTimeout(sync, 1_000);
+      }
+    };
+    void sync();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [setStatusText]);
 
   const captureScreenshot = useCallback(async () => {
     if (!currentDevice) return;
@@ -44,9 +80,9 @@ export function useMedia() {
   }, [currentDevice, setScreenshotPath, setStatusText]);
 
   const toggleRecord = useCallback(async () => {
-    if (!currentDevice) return;
+    if (!currentDevice && !recordingStatus.hasRecording) return;
 
-    if (isRecordingState) {
+    if (recordingStatus.hasRecording) {
       try {
         const filePath = await save({
           defaultPath: `recording_${Date.now()}.mp4`,
@@ -54,25 +90,44 @@ export function useMedia() {
         });
         if (!filePath) return;
 
-        const result = await stopRecord(currentDevice.id, filePath);
-        setIsRecordingState(false);
+        const result = await stopRecord(filePath);
         setStatusText(`Recording saved: ${result}`);
+        await syncRecordingStatus();
       } catch (err) {
-        setIsRecordingState(false);
         setStatusText(`Record failed: ${err}`);
+        await syncRecordingStatus();
       }
     } else {
+      if (!currentDevice) return;
       try {
         const remotePath = await startRecord(currentDevice.id);
-        setIsRecordingState(true);
+        await syncRecordingStatus();
         setStatusText(`Recording started on device: ${remotePath}`);
       } catch (err) {
         setStatusText(`Failed to start recording: ${err}`);
+        await syncRecordingStatus();
       }
     }
-  }, [currentDevice, isRecordingState, setStatusText]);
+  }, [currentDevice, recordingStatus.hasRecording, setStatusText, syncRecordingStatus]);
 
-  return { isScreenshotting, isRecordingState, captureScreenshot, toggleRecord };
+  const release = useCallback(async () => {
+    if (!recordingStatus.taskId || recordingStatus.running) return;
+    if (!confirm("释放这段录屏的占用以便开始新录屏？设备文件不会删除，但需稍后根据任务历史中的路径手动拉取。")) return;
+    try {
+      setStatusText(await releaseRecording(recordingStatus.taskId));
+      await syncRecordingStatus();
+    } catch (error) { setStatusText(`释放录屏失败：${error}`); }
+  }, [recordingStatus.taskId, recordingStatus.running, setStatusText, syncRecordingStatus]);
+
+  return {
+    isScreenshotting,
+    releaseRecordingState: release,
+    isRecordingState: recordingStatus.hasRecording,
+    isRecordingActive: recordingStatus.running,
+    recordingDeviceId: recordingStatus.deviceId,
+    captureScreenshot,
+    toggleRecord,
+  };
 }
 
 export function useApk() {
@@ -152,10 +207,11 @@ export function useApk() {
     if (!currentDevice) return "";
     try {
       return await getDeviceIp(currentDevice.id);
-    } catch {
+    } catch (err) {
+      setStatusText(`获取 Wi-Fi IP 失败: ${err}`);
       return "";
     }
-  }, [currentDevice]);
+  }, [currentDevice, setStatusText]);
 
   const extractApk = useCallback(
     async (packageName: string) => {

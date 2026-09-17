@@ -1,11 +1,10 @@
+use crate::tasks::{self, TaskKind, TaskManager};
 use std::process::Stdio;
-use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tauri::{AppHandle, Manager};
 
+#[derive(Default)]
 pub struct ScrcpyState {
-    pub process: Mutex<Option<tokio::process::Child>>,
+    pub operation: tokio::sync::Mutex<()>,
 }
 
 fn find_scrcpy(resource_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
@@ -41,96 +40,43 @@ fn find_scrcpy(resource_dir: Option<&std::path::Path>) -> Result<std::path::Path
 
 #[tauri::command]
 pub async fn start_scrcpy(device_id: String, app: AppHandle) -> Result<String, String> {
-    {
-        let state = app.state::<ScrcpyState>();
-        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Err("scrcpy 已在运行中".to_string());
-            }
-            guard.take();
+    let state = app.state::<ScrcpyState>();
+    let _operation = state.operation.lock().await;
+    let task = tasks::begin(&app, TaskKind::Scrcpy, &device_id, None)?;
+    let result = (|| {
+        let resource_dir = app.path().resource_dir().ok();
+        let path = find_scrcpy(resource_dir.as_deref())?;
+        crate::adb::process::prepare_command(&path)
+            .args(["-s", &device_id, "--no-audio"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("scrcpy 启动失败：{error}"))
+    })();
+    match result {
+        Ok(child) => {
+            tasks::supervise_process(task, child, device_id, false);
+            Ok("scrcpy 正在启动，可在任务中心查看结果".to_string())
+        }
+        Err(error) => {
+            task.finish_result::<()>(&Err(error.clone()), "未创建运行中的子进程");
+            Err(error)
         }
     }
-
-    let resource_dir = app.path().resource_dir().ok();
-    let scrcpy_path = find_scrcpy(resource_dir.as_deref())?;
-
-    let mut child = Command::new(&scrcpy_path)
-        .args(["-s", &device_id, "--no-audio"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("scrcpy 启动失败: {}", e))?;
-
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-
-    if let Ok(Some(status)) = child.try_wait() {
-        let stderr_text = if let Some(mut stderr) = child.stderr.take() {
-            let mut buf = String::new();
-            let _ = stderr.read_to_string(&mut buf).await;
-            let t = buf.trim().to_string();
-            if t.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", t)
-            }
-        } else {
-            String::new()
-        };
-        return Err(format!("scrcpy 已退出 (代码: {}){}", status, stderr_text));
-    }
-
-    if let Some(mut stderr) = child.stderr.take() {
-        let app_handle = app.clone();
-        tokio::spawn(async move {
-            let mut message = String::new();
-            let _ = stderr.read_to_string(&mut message).await;
-            if !message.trim().is_empty() {
-                let _ = app_handle.emit("scrcpy:error", message);
-            }
-            let _ = app_handle.emit("scrcpy:stopped", ());
-        });
-    }
-
-    let state = app.state::<ScrcpyState>();
-    {
-        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
-        *guard = Some(child);
-    }
-
-    Ok("scrcpy started".to_string())
 }
 
 #[tauri::command]
 pub async fn stop_scrcpy(app: AppHandle) -> Result<(), String> {
     let state = app.state::<ScrcpyState>();
-    let child_to_kill = {
-        let mut guard = state.process.lock().map_err(|e| e.to_string())?;
-        guard.take()
-    };
-
-    if let Some(mut child) = child_to_kill {
-        child.kill().await.map_err(|e| e.to_string())?;
-        let _ = child.wait().await;
-    }
-
-    Ok(())
+    let _operation = state.operation.lock().await;
+    tasks::stop_kind(&app, TaskKind::Scrcpy).await
 }
 
 #[tauri::command]
 pub async fn is_scrcpy_running(app: AppHandle) -> Result<bool, String> {
-    let state = app.state::<ScrcpyState>();
-    let mut guard = state.process.lock().map_err(|e| e.to_string())?;
-    let Some(child) = guard.as_mut() else {
-        return Ok(false);
-    };
-
-    match child.try_wait().map_err(|e| e.to_string())? {
-        Some(_) => {
-            guard.take();
-            Ok(false)
-        }
-        None => Ok(true),
-    }
+    Ok(app
+        .state::<TaskManager>()
+        .current(TaskKind::Scrcpy)
+        .is_some())
 }

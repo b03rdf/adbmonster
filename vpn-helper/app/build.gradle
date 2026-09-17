@@ -1,0 +1,26 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.rendongfang.adbmonster.vpnhelper"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.rendongfang.adbmonster.vpnhelper"
+        minSdk 24
+        targetSdk 34
+        versionCode 4
+        versionName "1.0.3"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

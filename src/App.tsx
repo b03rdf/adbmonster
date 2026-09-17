@@ -3,6 +3,8 @@ import { DeviceSelector } from "@/components/DeviceSelector";
 import { LogViewer } from "@/components/LogViewer";
 import { ToolPanel } from "@/components/ToolPanel";
 import { StatusBar } from "@/components/StatusBar";
+import { TaskCenter } from "@/components/TaskCenter";
+import { QrPairingDialog } from "@/components/QrPairingDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -26,11 +28,21 @@ function ConnectDialog() {
   const [port, setPort] = useState("5555");
   const [open, setOpen] = useState(false);
   const { setStatusText } = useAppStore();
+  const currentDevice = useDeviceStore((state) => state.currentDevice);
 
   const handleConnect = async () => {
     if (!ip) return;
+    const parsedPort = Number(port);
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65_535) {
+      setStatusText("连接失败: 端口必须在 1 到 65535 之间");
+      return;
+    }
     try {
-      const addr = `${ip}:${port}`;
+      const trimmedIp = ip.trim();
+      const host = trimmedIp.includes(":") && !trimmedIp.startsWith("[")
+        ? `[${trimmedIp}]`
+        : trimmedIp;
+      const addr = `${host}:${parsedPort}`;
       const result = await connectDevice(addr);
       setStatusText(`已连接: ${result}`);
       setOpen(false);
@@ -40,8 +52,17 @@ function ConnectDialog() {
   };
 
   const handleTcpip = async () => {
+    if (!currentDevice || currentDevice.connectionType !== "usb") {
+      setStatusText("请先选择要切换到 tcpip 模式的 USB 设备");
+      return;
+    }
+    const parsedPort = Number(port);
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65_535) {
+      setStatusText("tcpip 设置失败: 端口必须在 1 到 65535 之间");
+      return;
+    }
     try {
-      const result = await tcpipConnect(parseInt(port));
+      const result = await tcpipConnect(currentDevice.id, parsedPort);
       setStatusText(result);
     } catch (err) {
       setStatusText(`tcpip 设置失败: ${err}`);
@@ -79,7 +100,13 @@ function ConnectDialog() {
               onChange={(e) => setPort(e.target.value)}
             />
           </div>
-          <Button variant="outline" size="sm" onClick={handleTcpip} className="h-7 text-xs">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleTcpip}
+            disabled={!currentDevice || currentDevice.connectionType !== "usb"}
+            className="h-7 text-xs"
+          >
             设置设备 tcpip 模式
           </Button>
         </div>
@@ -101,31 +128,43 @@ function ScrcpyButton() {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let unlisten: (() => void) | undefined;
+    let unlisteners: (() => void)[] = [];
 
-    const syncState = async () => {
+    const refreshState = async () => {
       try {
         const nextRunning = await isScrcpyRunning();
         if (!cancelled) setRunning(nextRunning);
       } catch (err) {
         if (!cancelled) setStatusText(`Failed to query scrcpy status: ${err}`);
-      } finally {
-        if (!cancelled) timer = setTimeout(syncState, 2000);
       }
     };
 
-    syncState();
-    listen("scrcpy:stopped", () => setRunning(false)).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    }).catch((err) => {
-      if (!cancelled) setStatusText(`Failed to listen for scrcpy events: ${err}`);
-    });
+    const poll = async () => {
+      await refreshState();
+      if (!cancelled) timer = setTimeout(poll, 2000);
+    };
+
+    void poll();
+    Promise.all([
+      listen("scrcpy:stopped", () => {
+        void refreshState();
+      }),
+      listen<string>("scrcpy:error", (event) => {
+        if (!cancelled) setStatusText(`scrcpy 错误: ${event.payload}`);
+      }),
+    ])
+      .then((stops) => {
+        if (cancelled) stops.forEach((stop) => stop());
+        else unlisteners = stops;
+      })
+      .catch((err) => {
+        if (!cancelled) setStatusText(`Failed to listen for scrcpy events: ${err}`);
+      });
 
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      unlisten?.();
+      unlisteners.forEach((stop) => stop());
     };
   }, [setStatusText]);
 
@@ -215,7 +254,9 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           <DeviceSelector />
+          <TaskCenter />
           <ScrcpyButton />
+          <QrPairingDialog />
           <ConnectDialog />
         </div>
       </header>

@@ -1,0 +1,12 @@
+HEV Socks5 Tunnel
+Source: https://github.com/heiher/hev-socks5-tunnel
+Commit: 64cc609f945253b0e9ebc56317d544268f3c68c1
+License: MIT (see hev-socks5-tunnel.LICENSE)
+
+The checked-in Android shared libraries were built without functional source
+modifications for armeabi-v7a, arm64-v8a, x86, and x86_64.
+
+The HEV build statically links its hev-socks5-core, hev-task-system, libyaml
+fork, and lwIP dependencies. The HEV components and libyaml fork use the same
+MIT license text included in hev-socks5-tunnel.LICENSE. lwIP is distributed
+under its BSD license included in lwip.LICENSE.

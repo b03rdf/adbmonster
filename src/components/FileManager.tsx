@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -30,7 +30,7 @@ function formatBytes(bytes: number): string {
   if (bytes === 0) return "-";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
@@ -44,22 +44,39 @@ export function FileManager() {
   const [dragOver, setDragOver] = useState(false);
   const [newDirName, setNewDirName] = useState("");
   const [showNewDir, setShowNewDir] = useState(false);
+  const loadRequestRef = useRef(0);
+
+  useEffect(() => {
+    loadRequestRef.current += 1;
+    setCurrentPath("/sdcard");
+    setFiles([]);
+    setError(null);
+    setLoading(false);
+  }, [currentDevice?.id]);
 
   const loadFiles = useCallback(async () => {
-    if (!currentDevice) return;
+    if (!currentDevice) {
+      loadRequestRef.current += 1;
+      return;
+    }
+    const requestId = ++loadRequestRef.current;
+    const deviceId = currentDevice.id;
+    const path = currentPath;
     setLoading(true);
     try {
-      const list = await listRemoteFiles(currentDevice.id, currentPath);
+      const list = await listRemoteFiles(deviceId, path);
+      if (requestId !== loadRequestRef.current) return;
       setFiles(list);
       setError(null);
-      setStatusText(`已加载 ${currentPath}，共 ${list.length} 项`);
+      setStatusText(`已加载 ${path}，共 ${list.length} 项`);
     } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
       const msg = String(err);
       setError(msg);
       setStatusText(`读取目录失败: ${msg}`);
       setFiles([]);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   }, [currentDevice, currentPath, setStatusText]);
 
@@ -147,11 +164,19 @@ export function FileManager() {
   };
 
   const handleCreateDir = async () => {
-    if (!currentDevice || !newDirName) return;
-    const remotePath = currentPath === "/" ? `/${newDirName}` : `${currentPath}/${newDirName}`;
+    if (!currentDevice) return;
+    const directoryName = newDirName.trim();
+    if (
+      !directoryName || directoryName === "." || directoryName === ".." ||
+      directoryName.includes("/") || directoryName.includes("\\")
+    ) {
+      setStatusText("文件夹名称不能为空，且不能包含路径分隔符");
+      return;
+    }
+    const remotePath = currentPath === "/" ? `/${directoryName}` : `${currentPath}/${directoryName}`;
     try {
       await createRemoteDirectory(currentDevice.id, remotePath);
-      setStatusText(`已创建目录: ${newDirName}`);
+      setStatusText(`已创建目录: ${directoryName}`);
       setNewDirName("");
       setShowNewDir(false);
       await loadFiles();

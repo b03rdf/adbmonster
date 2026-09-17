@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { TaskSnapshot } from "@/lib/taskState";
+
+export const listTasks = () => invoke<TaskSnapshot>("list_tasks");
+export const cancelTask = (taskId: string) => invoke<void>("cancel_task", { taskId });
+export const clearTaskHistory = () => invoke<void>("clear_task_history");
 import type {
   AutoConnectResult,
   Device,
   DeviceMetrics,
   DiagnosticStatus,
+  RecordingStatus,
   RemoteFile,
   WeakNetworkCapabilities,
   WeakNetworkConfig,
@@ -30,8 +36,8 @@ export async function getDeviceIp(deviceId: string) {
   return invoke<string>("get_device_ip", { deviceId });
 }
 
-export async function tcpipConnect(port: number) {
-  return invoke<string>("tcpip_connect", { port });
+export async function tcpipConnect(deviceId: string, port: number) {
+  return invoke<string>("tcpip_connect", { deviceId, port });
 }
 
 export async function pairDevice(ip: string, port: number, code: string) {
@@ -78,12 +84,16 @@ export async function startRecord(deviceId: string) {
   return invoke<string>("start_record", { deviceId });
 }
 
-export async function stopRecord(deviceId: string, localPath: string) {
-  return invoke<string>("stop_record", { deviceId, localPath });
+export async function stopRecord(localPath: string) {
+  return invoke<string>("stop_record", { localPath });
 }
 
 export async function isRecording() {
   return invoke<boolean>("is_recording");
+}
+
+export async function getRecordingStatus() {
+  return invoke<RecordingStatus>("get_recording_status");
 }
 
 export async function pullFile(deviceId: string, remote: string, local: string) {
@@ -164,18 +174,45 @@ export async function detectWeakNetworkCapabilities(deviceId: string) {
   return invoke<WeakNetworkCapabilities>("detect_weak_network_capabilities", { deviceId });
 }
 
+export const releaseRecording = (taskId: string) => invoke<string>("release_recording", { taskId });
+
+export async function installWeakNetworkHelper(deviceId: string) {
+  return invoke<WeakNetworkCapabilities>("install_weak_network_helper", { deviceId });
+}
+
+export async function authorizeWeakNetworkHelper(deviceId: string) {
+  return invoke<string>("authorize_weak_network_helper", { deviceId });
+}
+
 export async function applyWeakNetwork(deviceId: string, config: WeakNetworkConfig) {
   return invoke<WeakNetworkStatus>("apply_weak_network", { deviceId, config });
 }
 
-export async function stopWeakNetwork() {
-  return invoke<WeakNetworkStatus>("stop_weak_network");
+export async function stopWeakNetwork(deviceId: string) {
+  return invoke<WeakNetworkStatus>("stop_weak_network", { deviceId });
 }
 
-export async function forceRestoreWeakNetwork(deviceId: string) {
-  return invoke<WeakNetworkStatus>("force_restore_weak_network", { deviceId });
+export async function getWeakNetworkStatus(deviceId: string) {
+  return invoke<WeakNetworkStatus>("get_weak_network_status", { deviceId });
 }
 
-export async function getWeakNetworkStatus() {
-  return invoke<WeakNetworkStatus>("get_weak_network_status");
+export async function listWeakNetworkScenarios() {
+  return invoke<NetworkScenario[]>("list_weak_network_scenarios");
 }
+export async function saveWeakNetworkScenario(scenario: NetworkScenario) {
+  return invoke<NetworkScenario[]>("save_weak_network_scenario", { scenario });
+}
+export async function deleteWeakNetworkScenario(name: string) {
+  return invoke<NetworkScenario[]>("delete_weak_network_scenario", { name });
+}
+export async function runWeakNetworkScenario(deviceId: string, scenario: NetworkScenario) {
+  return invoke<WeakNetworkStatus>("run_weak_network_scenario", { deviceId, scenario });
+}
+export async function getWeakNetworkObservation(deviceId: string) {
+  return invoke<NetworkReport | null>("get_weak_network_observation", { deviceId });
+}
+export async function exportWeakNetworkReport(runId: string, outputPath: string) {
+  return invoke<string>("export_weak_network_report", { runId, outputPath });
+}
+
+import type { NetworkScenario, NetworkReport } from "./networkScenario";
